@@ -64,11 +64,11 @@ class CMakeBuild(build_ext):
 
 
 setup(
-    name="wbe-build-utils-mesh-compiler",
+    name="wbe-utils-mesh-compiler",
     version="0.1.0",
     description="White Bird Engine mesh resource compiler.",
-    packages=["wbe_build_utils_mesh_compiler"],
-    ext_modules=[CMakeExtension("wbe_build_utils_mesh_compiler._native")],
+    packages=["wbe_utils_mesh_compiler"],
+    ext_modules=[CMakeExtension("wbe_utils_mesh_compiler._native")],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     python_requires=">=3.10",

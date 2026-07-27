@@ -73,7 +73,7 @@ def clean() -> None:
     for path in ROOT_DIR.glob("*.egg-info"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
-    for path in (ROOT_DIR / "wbe_build_utils_mesh_compiler").glob("_native*.so"):
+    for path in (ROOT_DIR / "wbe_utils_mesh_compiler").glob("_native*.so"):
         if path.is_file():
             path.unlink()
     for path in ROOT_DIR.glob("**/__pycache__"):
