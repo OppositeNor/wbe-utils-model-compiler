@@ -68,9 +68,6 @@ The final project should follow this structure:
 ├── test/
 │   └── ...
 │
-├── dependencies/
-│   └── assimp/
-│
 └── test-model/
 └── ...
 
@@ -90,7 +87,7 @@ requirements.txt
 
 Before installing dependencies, list all required Python dependencies in this file.
 
-Do not install dependencies yourself.
+Do not install dependencies yourself. Please wait for the user to setup the python environment for you. After setup, you should have a functional python environment afterward.
 
 The Python package must be installable with:
 

@@ -11,135 +11,103 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import json
+from __future__ import annotations
+
+import argparse
 import os
 from pathlib import Path
-import subprocess
-import traceback
-from typing import Any
-from build_script import on_build
 import shutil
-import build_config
-from build_script.reflection.code_gen import WBEGenFileInfo
-import build_setup
+import subprocess
+import sys
 
-metaparser_clang_args: list[str] = [
-    "-std=c++20",
-    f"-I{build_setup.include_dir}",
-    f"-I{build_setup.per_target_include_dir}",
-    "-DWBE_REFLECTION_PARSER"
-]
 
-# HELPER FUNCTIONS
-def _get_cmake_command_from_info(build_info: dict[str, Any]) -> list[str]:
-    """Helper function which converts the build info to cmake command"""
-    result: list[str] = ["cmake"]
-    result.append("-B")
-    result.append(build_setup.build_dir)
-    result.append(f"-DWBE_BINARY_DIR={build_setup.binary_dir}")
-    result.append(f"-DWBE_BUILD_SHARED={"ON" if build_info["build-shared"] else "OFF"}")
-    if build_info.get("generator") is not None:
-        result.append("-G")
-        result.append(build_info["generator"])
-    result.append(f"-DCMAKE_BUILD_TYPE={build_info["cmake-build-type"]}")
-    result.append(f"-DWBE_BUILD_TARGET={build_setup.args.target}")
-    result.append(f"-DWBE_INCLUDE_DIR={build_setup.include_dir}")
-    result.append(f"-DWBE_PER_TARGET_INCLUDE_DIR={build_setup.per_target_include_dir}")
-    if build_info.get("cpp-compiler") is not None:
-        result.append(f"-DCMAKE_CXX_COMPILER={build_info["cpp-compiler"]}")
-    if build_info.get("c-compiler") is not None:
-        result.append(f"-DCMAKE_C_COMPILER={build_info["c-compiler"]}")
-    if build_info["generate-tests"]:
-        result.append("-DWBE_MAKE_TEST=ON")
-    else:
-        result.append("-DWBE_MAKE_TEST=OFF")
-    if build_info.get("additional-cmake-args") is not None:
-        result.append(build_info["additional-cmake-args"])
-    return result
+ROOT_DIR = Path(__file__).resolve().parent
+DEFAULT_BUILD_TYPE = "Debug"
+DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "dependencies" / "assimp"
 
-def _gather_license() -> None:
-    # Get white bird engine license
-    shutil.copyfile(os.path.join(build_setup.root_dir, "LICENSE"), os.path.join(build_setup.licenses_output_dir, "white-bird-engine_LICENSE"))
-    # Get licenses from dependencies
-    deps_dir = Path(build_setup.dependencies_dir).resolve()
-    output_dir = Path(build_setup.licenses_output_dir).resolve()
 
-    for subdir in deps_dir.iterdir():
-        if subdir.is_dir():
-            license_files = [p for p in subdir.iterdir() 
-                             if p.is_file() and ("license" in p.name.lower() or
-                                                 "copying" in p.name.lower() or
-                                                 "authors" in p.name.lower() or
-                                                 "patents" in p.name.lower())]
-            if not license_files:
-                print(f"Warning: No LICENSE found in {subdir}")
-                continue
-            for lf in license_files:
-                target_name = f"{subdir.name}_{lf.name}"
-                target_path = os.path.join(output_dir, target_name)
-                shutil.copy2(lf, target_path)
+def _run(command: list[str], p_cwd: Path | None = None) -> None:
+    result = subprocess.run(command, cwd=p_cwd if p_cwd is not None else ROOT_DIR)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
 
-            # Apache license requires to also include a NOTICE file if exists:
-            notice_files = [p for p in subdir.iterdir()
-                if p.is_file() and "notice" in p.name.lower()]
-            if notice_files:
-                for nf in notice_files:
-                    target_name = f"{subdir.name}_{nf.name}"
-                    target_path = os.path.join(output_dir, target_name)
-                    print(f"Copying NOTICE {nf} -> {target_path}")
-                    shutil.copy2(nf, target_path)
 
-def _gather_gen_infos() -> list[WBEGenFileInfo]:
-    gen_infos: list[WBEGenFileInfo] = []
-    for gen_info_file in build_config.gen_info_files:
-        with open(gen_info_file) as f:
-            data = json.load(f)
-        file_infos = [WBEGenFileInfo(**info) for info in data]
-        for file_info in file_infos:
-            if not file_info.out_dir:
-                file_info.out_dir = os.path.dirname(gen_info_file)
-        gen_infos.extend(file_infos)
-    return gen_infos
+def _build_dir(p_build_type: str) -> Path:
+    return ROOT_DIR / "build" / p_build_type.lower()
 
-# ENTRY
+
+def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
+    build_dir = _build_dir(p_build_type)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        "cmake",
+        "-S",
+        str(ROOT_DIR),
+        "-B",
+        str(build_dir),
+        f"-DCMAKE_BUILD_TYPE={p_build_type}",
+        f"-DWBE_ASSIMP_ROOT={p_assimp_root.resolve()}",
+    ]
+    _run(command)
+
+
+def build(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
+    build_dir = _build_dir(p_build_type)
+    if not (build_dir / "CMakeCache.txt").exists():
+        configure(p_build_type, p_assimp_root)
+    command = ["cmake", "--build", str(build_dir)]
+    cpu_count = os.cpu_count()
+    if cpu_count is not None:
+        command.extend(["-j", str(cpu_count)])
+    _run(command)
+
+
+def test(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
+    build(p_build_type, p_assimp_root)
+    _run([sys.executable, "-m", "pytest", str(ROOT_DIR / "test")], ROOT_DIR)
+
+
+def clean() -> None:
+    shutil.rmtree(ROOT_DIR / "build", ignore_errors=True)
+    shutil.rmtree(ROOT_DIR / "dist", ignore_errors=True)
+    for path in ROOT_DIR.glob("*.egg-info"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+    for path in (ROOT_DIR / "wbe_build_utils_mesh_compiler").glob("_native*.so"):
+        if path.is_file():
+            path.unlink()
+    for path in ROOT_DIR.glob("**/__pycache__"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+    for path in ROOT_DIR.glob("**/.pytest_cache"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build the White Bird Engine mesh compiler.")
+    parser.add_argument("operation", choices=["configure", "build", "test", "clean"], help="Build operation to run.")
+    parser.add_argument("--build-type", default=DEFAULT_BUILD_TYPE, help="CMake build type.")
+    parser.add_argument(
+        "--assimp-root",
+        type=Path,
+        default=Path(os.environ.get("WBE_ASSIMP_ROOT", DEFAULT_ASSIMP_ROOT)),
+        help="Path to the Assimp source directory.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    if args.operation == "configure":
+        configure(args.build_type, args.assimp_root)
+    elif args.operation == "build":
+        build(args.build_type, args.assimp_root)
+    elif args.operation == "test":
+        test(args.build_type, args.assimp_root)
+    elif args.operation == "clean":
+        clean()
+
+
 if __name__ == "__main__":
-    # Gather sources for reflection
-    try:
-        print(f"WBEBuilder: Building target: {build_setup.args.target}.")
-        print("WBEBuilder: Running asset conditioning pipeline...")
-        print("WBEBuilder: Gathering licenses...")
-        _gather_license()
-        print("WBEBuilder: Gathering sources...")
-        if build_setup.build_target["generate-tests"]:
-            headers = build_config.project_headers
-        else:
-            headers = build_config.project_headers_exclude_tests
-        print("WBEBuilder: Gathering generate.json...")
-        gen_infos = _gather_gen_infos()
-
-        # Run reflection script
-        print("WBEBuilder: Running reflections...")
-        on_build.reflect(metaparser_clang_args, build_setup.metadata_path, build_setup.metadata_cache_dir, headers, gen_infos)
-
-        # Build project with CMake
-        print("WBEBuilder: Running cmake...")
-        result = subprocess.run(_get_cmake_command_from_info(build_setup.build_target))
-        if result.returncode != 0:
-            raise RuntimeError("Failed to setup cmake build.")
-        build_command = ["cmake", "--build", build_setup.build_dir]
-        if os.cpu_count() is not None:
-            build_command.extend(["-j", str(os.cpu_count())])
-        result = subprocess.run(build_command)
-        if result.returncode != 0:
-            raise RuntimeError("Failed to build with CMake.")
-
-        # Keep compile database available in both conventional locations used by tooling.
-        compile_commands_path = os.path.join(build_setup.build_dir, "compile_commands.json")
-        shutil.copy(compile_commands_path, "build")
-        shutil.copy(compile_commands_path, "compile_commands.json")
-        print("WBEBuilder: Finished!")
-
-    except Exception as e:
-        print("Build failed! Message:", e)
-        traceback.print_exc()
-        exit(-1)
+    main()
