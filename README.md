@@ -144,7 +144,7 @@ material_resources = compiler.compile_materials(
 					"position": {"x": float, "y": float, "z": float},
 					"uv": {"u": float, "v": float},
 					"normal": {"x": float, "y": float, "z": float},
-					"bone_id": list[int] | None,
+					"bones": [{"index": int, "weight": float}] | None,
 				}
 			],
 			"indices_data": list[int],

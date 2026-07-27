@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <assimp/Importer.hpp>
@@ -38,7 +39,7 @@ struct IntermediateVertex
     std::array<float, 3> position = {0.0F, 0.0F, 0.0F};
     std::array<float, 2> uv = {0.0F, 0.0F};
     std::array<float, 3> normal = {0.0F, 0.0F, 0.0F};
-    std::array<int, 4> bone_id = {-1, -1, -1, -1};
+    std::vector<std::pair<int, float>> bones;
 };
 
 struct IntermediateSubmesh
@@ -87,17 +88,20 @@ py::dict make_uv(const std::array<float, 2>& p_value)
     return result;
 }
 
-py::object make_bone_id(const std::array<int, 4>& p_bone_id)
+py::object make_bones(const std::vector<std::pair<int, float>>& p_bones)
 {
-    if (std::ranges::all_of(p_bone_id, [](int p_id) { return p_id < 0; }))
+    if (p_bones.empty())
     {
         return py::none();
     }
 
     py::list result;
-    for (int bone_id : p_bone_id)
+    for (const auto& [bone_index, bone_weight] : p_bones)
     {
-        result.append(bone_id < 0 ? py::int_(0) : py::int_(bone_id));
+        py::dict bone;
+        bone["index"] = bone_index;
+        bone["weight"] = bone_weight;
+        result.append(bone);
     }
     return result;
 }
@@ -161,7 +165,7 @@ bool add_texture(
     return true;
 }
 
-void apply_bone_ids(const aiMesh* p_mesh, std::vector<IntermediateVertex>& p_vertices)
+void apply_bones(const aiMesh* p_mesh, std::vector<IntermediateVertex>& p_vertices)
 {
     for (unsigned int bone_index = 0; bone_index < p_mesh->mNumBones; ++bone_index)
     {
@@ -173,11 +177,10 @@ void apply_bone_ids(const aiMesh* p_mesh, std::vector<IntermediateVertex>& p_ver
             {
                 continue;
             }
-            auto& vertex_bone_ids = p_vertices[weight.mVertexId].bone_id;
-            const auto insert_at = std::ranges::find(vertex_bone_ids, -1);
-            if (insert_at != vertex_bone_ids.end())
+            auto& vertex_bones = p_vertices[weight.mVertexId].bones;
+            if (vertex_bones.size() < 4)
             {
-                *insert_at = static_cast<int>(bone_index);
+                vertex_bones.emplace_back(static_cast<int>(bone_index), weight.mWeight);
             }
         }
     }
@@ -216,7 +219,7 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene, const aiMesh* p_mesh,
         result.vertices.push_back(vertex);
     }
 
-    apply_bone_ids(p_mesh, result.vertices);
+    apply_bones(p_mesh, result.vertices);
 
     for (unsigned int face_index = 0; face_index < p_mesh->mNumFaces; ++face_index)
     {
@@ -297,7 +300,7 @@ py::dict to_python(const IntermediateVertex& p_vertex)
     result["position"] = make_vec3(p_vertex.position);
     result["uv"] = make_uv(p_vertex.uv);
     result["normal"] = make_vec3(p_vertex.normal);
-    result["bone_id"] = make_bone_id(p_vertex.bone_id);
+    result["bones"] = make_bones(p_vertex.bones);
     return result;
 }
 

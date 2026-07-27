@@ -61,13 +61,14 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert submesh["indices_data"]
 
     vertex = submesh["vertices_data"][0]
-    assert set(vertex) == {"position", "uv", "normal", "bone_id"}
+    assert set(vertex) == {"position", "uv", "normal", "bones"}
     assert set(vertex["position"]) == {"x", "y", "z"}
     assert set(vertex["uv"]) == {"u", "v"}
     assert set(vertex["normal"]) == {"x", "y", "z"}
     assert isinstance(vertex["position"]["x"], float)
     assert isinstance(vertex["uv"]["u"], float)
     assert isinstance(vertex["normal"]["x"], float)
+    assert vertex["bones"] is None or all(set(bone) == {"index", "weight"} for bone in vertex["bones"])
     assert all(isinstance(index, int) for index in submesh["indices_data"])
 
 

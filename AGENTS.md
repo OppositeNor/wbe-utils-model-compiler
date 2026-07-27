@@ -26,16 +26,14 @@ Do not provide large explanations unless requested.
 
 ## Validation
 
-Use the validation wrapper for normal build and unit-test validation. It prints only short `WBEValidator:` status lines, writes detailed logs under `build/validation_logs/`, and stops at the first failed step.
+Use `build.py` for normal configure, build, test, and clean operations.
 
 ```sh
-python validation.py                         # debug build + full unit tests
-python validation.py -t release              # release build + full unit tests
-python validation.py -t debug-gcc            # GCC debug build + full unit tests
-python validation.py -t debug -- --gtest_filter='WBESomeTest*'
+python build.py configure
+python build.py build
+python build.py test
+python build.py clean
 ```
-
-When gtest arguments are forwarded after `--`, the requested gtest run is executed first. If it passes, validation still runs the full unit test binary afterward.
 
 Do not include lint in validation. The user performs lint checks manually.
 
@@ -44,15 +42,14 @@ Do not include lint in validation. The user performs lint checks manually.
 Always use the Python build script — never invoke `cmake` directly.
 
 ```sh
-python build.py                 # default: deploy
-python build.py -t debug        # debug build  (clang)
-python build.py -t release      # release build (clang)
-python build.py -t deploy       # deploy build  (clang)
-python build.py -t debug-gcc    # debug build with GCC
-python build.py -t release-gcc  # release with GCC
+python build.py configure                 # configure the default Debug build
+python build.py build                     # build the default Debug target
+python build.py test                      # build, then run pytest tests
+python build.py clean                     # remove build, dist, cache, and native outputs
+python build.py build --build-type Release
 ```
 
-Build outputs land in `build/<target>/`. Test binaries: `build/<target>/bin/`, e.g. `build/debug/bin/wbe_unit_test`.
+Build outputs land in `build/<build-type>/`, e.g. `build/debug/`.
 
 ## File / Directory Layout
 
@@ -144,6 +141,7 @@ Document contracts, ownership, threading, and errors; do not restate signatures.
 
 ## Python Scripts
 
+- Do not create Python environments manually. Assume the current environment is capable for development; if it is not, pause, notify the user, and let the user resolve it.
 - All function parameters and return values must have type annotations. Use `-> None` explicitly for procedures.
 - Prefer concrete generics (`list[str]`, `dict[str, Any]`) over bare `list` / `dict`. Use `from typing import Any, Callable` etc. when needed.
 - Annotate non-trivial local variables whose type cannot be obviously inferred (e.g. empty containers: `result: list[str] = []`).
@@ -151,16 +149,7 @@ Document contracts, ownership, threading, and errors; do not restate signatures.
 
 ## Tests
 
-Tests mirror the src layer structure.
-
-Run:
-
-./build/debug/bin/unit_test
-
-Use:
---gtest_filter='Pattern*'
-
-Per-directory CMakeLists.txt use `file(GLOB *.cpp)`; new test files are picked up automatically.
+Run tests with `python build.py test`.
 
 ## Reflection / Codegen
 
