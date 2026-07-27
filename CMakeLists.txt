@@ -30,7 +30,7 @@ execute_process(
     RESULT_VARIABLE WBE_PYBIND11_RESULT
 )
 if(NOT WBE_PYBIND11_RESULT EQUAL 0)
-    message(FATAL_ERROR "pybind11 is required. Install dependencies from requirements.txt before configuring.")
+    message(FATAL_ERROR "pybind11 is required. Install dependencies from pyproject.toml before configuring.")
 endif()
 set(pybind11_DIR "${WBE_PYBIND11_CMAKE_DIR}" CACHE PATH "pybind11 CMake package directory")
 find_package(pybind11 CONFIG REQUIRED)

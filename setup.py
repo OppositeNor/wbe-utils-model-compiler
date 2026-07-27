@@ -24,6 +24,7 @@ from setuptools.command.build_ext import build_ext
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "dependencies" / "assimp"
+README_PATH = ROOT_DIR / "README.md"
 
 
 class CMakeExtension(Extension):
@@ -67,6 +68,8 @@ setup(
     name="wbe-utils-mesh-compiler",
     version="0.1.0",
     description="White Bird Engine mesh resource compiler.",
+    long_description=README_PATH.read_text(encoding="utf-8"),
+    long_description_content_type="text/markdown",
     packages=["wbe_utils_mesh_compiler"],
     ext_modules=[CMakeExtension("wbe_utils_mesh_compiler._native")],
     cmdclass={"build_ext": CMakeBuild},

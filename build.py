@@ -36,6 +36,10 @@ def _build_dir(p_build_type: str) -> Path:
     return ROOT_DIR / "build" / p_build_type.lower()
 
 
+def _is_configured(p_build_dir: Path) -> bool:
+    return (p_build_dir / "CMakeCache.txt").exists() and ((p_build_dir / "Makefile").exists() or (p_build_dir / "build.ninja").exists())
+
+
 def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
     build_dir = _build_dir(p_build_type)
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +57,7 @@ def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFA
 
 def build(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
     build_dir = _build_dir(p_build_type)
-    if not (build_dir / "CMakeCache.txt").exists():
+    if not _is_configured(build_dir):
         configure(p_build_type, p_assimp_root)
     command = ["cmake", "--build", str(build_dir)]
     cpu_count = os.cpu_count()
