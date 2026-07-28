@@ -21,7 +21,7 @@ from . import _native
 
 ManifestResource = dict[str, Any]
 
-class WBEMeshCompiler:
+class WBEUtilsMeshCompiler:
     def get_supported_resource_types(self) -> list[str]:
         return ["mesh"]
 
