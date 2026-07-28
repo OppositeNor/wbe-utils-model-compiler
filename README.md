@@ -28,7 +28,7 @@ The native layer returns Python-compatible objects directly through pybind11. It
 Assimp is expected to exist beside this repository:
 
 ```text
-../dependencies/assimp/
+../assimp/
 ```
 
 The path can be overridden with `WBE_ASSIMP_ROOT` or `--assimp-root`.
@@ -39,7 +39,7 @@ The path can be overridden with `WBE_ASSIMP_ROOT` or `--assimp-root`.
 - CMake 3.22 or newer
 - A C++23 compiler
 - Python build and test packages listed in `pyproject.toml`
-- Assimp source at `../dependencies/assimp/` or a custom source path
+- Assimp source at `../assimp/` or a custom source path
 
 Assimp is built from source with this project by CMake. It is not loaded through `pkg-config` and does not need to be installed system-wide.
 

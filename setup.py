@@ -23,7 +23,11 @@ from setuptools.command.build_ext import build_ext
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "dependencies" / "assimp"
+
+# The path declared in the White Bird Engine project. Not really ideal to write it this way, but since we allow
+# setting this up with environment variables I suppose this is OK.
+DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "assimp"
+
 README_PATH = ROOT_DIR / "README.md"
 
 
