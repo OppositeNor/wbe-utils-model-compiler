@@ -27,7 +27,7 @@ TEST_MODEL_DIR = ROOT_DIR / "test-model"
 def _cube_resource() -> dict[str, object]:
     return {
         "id": "cube",
-        "type": "mesh",
+        "type": "mesh_raw",
         "path": "Cube/glTF/Cube.gltf",
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",

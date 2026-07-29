@@ -120,7 +120,7 @@ material_resources = compiler.compile_materials(
 ```python
 {
 	"id": str,
-	"type": "mesh",
+	"type": "mesh_raw",
 	"path": str,
 	"graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
