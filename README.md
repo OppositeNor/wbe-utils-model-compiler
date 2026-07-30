@@ -6,7 +6,7 @@ The public API is a Python package. Mesh loading and resource conversion are imp
 
 ## What It Produces
 
-The compiler returns Python dictionaries that match White Bird Engine resource formats. Model compilation returns a mesh resource with submeshes, vertex data, indices, and material references. Material compilation returns material resources with pipeline IDs and texture bindings.
+The compiler returns Python dictionaries that match White Bird Engine resource formats. Model compilation returns a mesh resource with submeshes, binary geometry section descriptors, sidecar geometry binaries, and material references. Material compilation returns material resources with pipeline IDs and texture bindings.
 
 The native layer returns Python-compatible objects directly through pybind11. It does not expose C structs, STL containers, or C++ objects as part of the public Python API.
 
@@ -114,6 +114,7 @@ material_resources = compiler.compile_materials(
 ```
 
 `res_dir` is used to resolve relative resource paths first. If the resource path is not found there, it is resolved relative to `manifest_path.parent`.
+`res_output_dir` is used as the root for emitted geometry sidecar binaries.
 
 ## Manifest Resource Input
 
@@ -124,10 +125,11 @@ material_resources = compiler.compile_materials(
 	"file": str,
 	"graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
+	"geometry_output_dir": str,
 }
 ```
 
-`id`, `graphics_pipeline_ids`, and `texture_output_dir` are optional at runtime. When `id` is omitted, the source file stem is used.
+`id`, `graphics_pipeline_ids`, `texture_output_dir`, and `geometry_output_dir` are optional at runtime. When `id` is omitted, the source file stem is used. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`.
 
 ## Mesh Resource Output
 
@@ -139,20 +141,22 @@ material_resources = compiler.compile_materials(
 		{
 			"id": str,
 			"type": "submesh",
-			"vertices_data": [
-				{
-					"position": {"x": float, "y": float, "z": float},
-					"uv": {"u": float, "v": float},
-					"normal": {"x": float, "y": float, "z": float},
-					"bones": [{"index": int, "weight": float}] | None,
-				}
+			"geometry_path": str,
+			"geometry_sections": [
+				{"slot": "position", "start": int, "size": int, "type": "vec3"},
+				{"slot": "normal", "start": int, "size": int, "type": "vec3"},
+				{"slot": "tangent", "start": int, "size": int, "type": "vec3"},
+				{"slot": "bitangent", "start": int, "size": int, "type": "vec3"},
+				{"slot": "uv", "start": int, "size": int, "type": "vec2"},
+				{"slot": "index", "start": int, "size": int, "type": "uint32"},
 			],
-			"indices_data": list[int],
 			"material_id": str | None,
 		}
 	],
 }
 ```
+
+Geometry sidecar binaries contain raw little-endian `float32` vertex attribute values and `uint32` indices with no file header. Section metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` sections when tangent data is available for the source mesh.
 
 ## Material Resource Output
 
@@ -193,4 +197,4 @@ Run the full test path through the build wrapper:
 python build.py test
 ```
 
-The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh output fields, vertex/index data, material references, texture bindings, and relative texture paths.
+The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh output fields, geometry sidecar files and sections, material references, texture bindings, and relative texture paths.

@@ -37,6 +37,7 @@ class WBEUtilsMeshCompiler:
 
         source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
+        geometry_output_dir, geometry_path_prefix = self._resolve_geometry_output(resource, manifest_path, res_dir, res_output_dir)
 
         texture_output_dir = str(resource.get("texture_output_dir", ""))
         if texture_output_dir:
@@ -46,7 +47,14 @@ class WBEUtilsMeshCompiler:
 
         resource_id = str(resource.get("id", source_path.stem))
         graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
-        return _native.compile_mesh(str(source_path), resource_id, graphics_pipeline_ids, texture_output_dir)
+        return _native.compile_mesh(
+            str(source_path),
+            resource_id,
+            graphics_pipeline_ids,
+            texture_output_dir,
+            str(geometry_output_dir),
+            geometry_path_prefix,
+        )
 
     def compile_materials(
         self,
@@ -83,6 +91,30 @@ class WBEUtilsMeshCompiler:
                 texture_file = Path(raw_file)
                 resolved_file = texture_file if texture_file.is_absolute() else source_dir / texture_file
                 texture["file"] = resolved_file.resolve().relative_to(resource_root).as_posix()
+
+    def _resolve_geometry_output(
+        self,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+    ) -> tuple[Path, str]:
+        raw_geometry_output_dir = str(resource.get("geometry_output_dir", ""))
+        if raw_geometry_output_dir:
+            geometry_rel_dir = Path(raw_geometry_output_dir)
+            if geometry_rel_dir.is_absolute():
+                raise ValueError("geometry_output_dir must be relative to the resource output directory.")
+            geometry_rel_dir = Path(geometry_rel_dir.as_posix())
+        else:
+            try:
+                geometry_rel_dir = manifest_path.parent.resolve().relative_to(res_dir.resolve())
+            except ValueError:
+                geometry_rel_dir = Path("")
+
+        geometry_output_dir = res_output_dir / geometry_rel_dir
+        geometry_output_dir.mkdir(parents=True, exist_ok=True)
+        geometry_path_prefix = "" if geometry_rel_dir.as_posix() == "." else geometry_rel_dir.as_posix()
+        return geometry_output_dir, geometry_path_prefix
 
     def _resolve_resource_path(self, resource: ManifestResource, manifest_path: Path, res_dir: Path) -> Path:
         raw_path = Path(str(resource["file"]))

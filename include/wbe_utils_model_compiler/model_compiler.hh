@@ -43,7 +43,9 @@ public:
         const std::filesystem::path& p_source_path,
         const std::string& p_resource_id,
         const pybind11::list& p_graphics_pipeline_ids,
-        const std::string& p_texture_output_dir) const;
+        const std::string& p_texture_output_dir,
+        const std::filesystem::path& p_geometry_output_dir,
+        const std::string& p_geometry_path_prefix) const;
 
     /** Compile source materials into White Bird Engine material resource dictionaries. */
     pybind11::list compile_materials(

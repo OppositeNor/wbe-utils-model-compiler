@@ -151,6 +151,13 @@ Document contracts, ownership, threading, and errors; do not restate signatures.
 
 Run tests with `python build.py test`.
 
+## Geometry Output
+
+- `compile_mesh` emits runtime mesh dictionaries with `geometry_path` and `geometry_sections`; it must not emit `vertices_data` or `indices_data`.
+- Geometry sidecar binaries are raw section payloads only: `float32` for `position`, `normal`, `tangent`, `bitangent`, and `uv`; `uint32` for `index`.
+- Assimp tangent-space generation is enabled. Preserve tangent and bitangent export when changing import flags or intermediate vertex fields.
+- `geometry_output_dir` is source-only and resource-root-relative. Do not leak it into runtime resource dictionaries.
+
 ## Reflection / Codegen
 
 - All C++ header code are scanned by `build_script/reflection/metaparser.py`.

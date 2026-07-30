@@ -30,14 +30,23 @@ PYBIND11_MODULE(_native, p_module)
         [](const std::string& p_source_path,
            const std::string& p_resource_id,
            const py::list& p_graphics_pipeline_ids,
-           const std::string& p_texture_output_dir) -> py::dict {
+           const std::string& p_texture_output_dir,
+           const std::string& p_geometry_output_dir,
+           const std::string& p_geometry_path_prefix) -> py::dict {
             const wbe::model_compiler::MeshCompiler compiler;
-            return compiler.compile_mesh(std::filesystem::path(p_source_path), p_resource_id, p_graphics_pipeline_ids, p_texture_output_dir);
+            return compiler.compile_mesh(std::filesystem::path(p_source_path),
+                p_resource_id,
+                p_graphics_pipeline_ids,
+                p_texture_output_dir,
+                std::filesystem::path(p_geometry_output_dir),
+                p_geometry_path_prefix);
         },
         py::arg("source_path"),
         py::arg("resource_id"),
         py::arg("graphics_pipeline_ids"),
-        py::arg("texture_output_dir"));
+        py::arg("texture_output_dir"),
+        py::arg("geometry_output_dir"),
+        py::arg("geometry_path_prefix"));
 
     p_module.def(
         "compile_materials",

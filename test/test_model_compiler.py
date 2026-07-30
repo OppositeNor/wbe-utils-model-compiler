@@ -27,7 +27,7 @@ TEST_MODEL_DIR = ROOT_DIR / "test-model"
 def _cube_resource() -> dict[str, object]:
     return {
         "id": "cube",
-        "type": "mesh_raw",
+        "type": "model",
         "file": "Cube/glTF/Cube.gltf",
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
@@ -55,21 +55,30 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert submesh["id"] == "cube.submesh.Cube"
     assert submesh["type"] == "submesh"
     assert submesh["material_id"] == "cube.material.Cube"
-    assert isinstance(submesh["vertices_data"], list)
-    assert isinstance(submesh["indices_data"], list)
-    assert submesh["vertices_data"]
-    assert submesh["indices_data"]
+    assert "vertices_data" not in submesh
+    assert "indices_data" not in submesh
+    assert isinstance(submesh["geometry_path"], str)
+    assert isinstance(submesh["geometry_sections"], list)
+    geometry_path = tmp_path / submesh["geometry_path"]
+    assert geometry_path.is_file()
 
-    vertex = submesh["vertices_data"][0]
-    assert set(vertex) == {"position", "uv", "normal", "bones"}
-    assert set(vertex["position"]) == {"x", "y", "z"}
-    assert set(vertex["uv"]) == {"u", "v"}
-    assert set(vertex["normal"]) == {"x", "y", "z"}
-    assert isinstance(vertex["position"]["x"], float)
-    assert isinstance(vertex["uv"]["u"], float)
-    assert isinstance(vertex["normal"]["x"], float)
-    assert vertex["bones"] is None or all(set(bone) == {"index", "weight"} for bone in vertex["bones"])
-    assert all(isinstance(index, int) for index in submesh["indices_data"])
+    sections = {section["slot"]: section for section in submesh["geometry_sections"]}
+    assert set(sections) == {"position", "normal", "tangent", "bitangent", "uv", "index"}
+    assert sections["position"]["type"] == "vec3"
+    assert sections["normal"]["type"] == "vec3"
+    assert sections["tangent"]["type"] == "vec3"
+    assert sections["bitangent"]["type"] == "vec3"
+    assert sections["uv"]["type"] == "vec2"
+    assert sections["index"]["type"] == "uint32"
+    file_size = geometry_path.stat().st_size
+    for section in sections.values():
+        assert isinstance(section["start"], int)
+        assert isinstance(section["size"], int)
+        assert section["size"] > 0
+        assert section["start"] + section["size"] <= file_size
+    assert sections["position"]["size"] % (3 * 4) == 0
+    assert sections["uv"]["size"] % (2 * 4) == 0
+    assert sections["index"]["size"] % (3 * 4) == 0
 
 
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
