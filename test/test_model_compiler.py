@@ -46,15 +46,15 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     compiled = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
     assert isinstance(compiled, dict)
-    assert compiled["id"] == "cube"
+    assert compiled["id"] == "cube.mesh"
     assert compiled["type"] == "mesh"
     assert isinstance(compiled["submeshes"], list)
     assert compiled["submeshes"]
 
     submesh = compiled["submeshes"][0]
-    assert submesh["id"] == "Cube"
+    assert submesh["id"] == "cube.submesh.Cube"
     assert submesh["type"] == "submesh"
-    assert submesh["material_id"] == "Cube"
+    assert submesh["material_id"] == "cube.material.Cube"
     assert isinstance(submesh["vertices_data"], list)
     assert isinstance(submesh["indices_data"], list)
     assert submesh["vertices_data"]
@@ -81,7 +81,7 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     assert isinstance(materials, list)
     assert materials
     material = materials[0]
-    assert material["id"] == "Cube"
+    assert material["id"] == "cube.material.Cube"
     assert material["type"] == "material"
     assert material["graphics_pipeline_ids"] == ["main_pipeline"]
     assert isinstance(material["textures"], list)
@@ -94,5 +94,7 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
         texture = texture_binding["texture"]
         assert texture["type"] == "image"
         assert not Path(texture["file"]).is_absolute()
-        assert texture["color_space"] in {"srgb", "linear"}
+        assert "path" in texture
+        assert not Path(texture["path"]).is_absolute()
+        assert texture["color_space"] in {"srgb", "rgb"}
         assert texture["channel_count"] in {3, 4}

@@ -54,6 +54,7 @@ struct IntermediateSubmesh
 struct IntermediateMaterialTexture
 {
     std::string texture_key;
+    std::string file;
     std::string path;
     std::string color_space;
     int channel_count = 4;
@@ -106,23 +107,38 @@ py::object make_bones(const std::vector<std::pair<int, float>>& p_bones)
     return result;
 }
 
-std::string material_id_for(const aiMaterial* p_material, const std::string& p_resource_id, unsigned int p_material_index)
+std::string generated_resource_id_for(const std::string& p_resource_id, const std::string& p_resource_type, const std::string& p_local_id)
+{
+    return p_resource_id + "." + p_resource_type + "." + p_local_id;
+}
+
+std::string material_local_id_for(const aiMaterial* p_material, unsigned int p_material_index)
 {
     aiString material_name;
     if (p_material != nullptr && p_material->Get(AI_MATKEY_NAME, material_name) == AI_SUCCESS && material_name.length > 0)
     {
         return material_name.C_Str();
     }
-    return p_resource_id + "_material_" + std::to_string(p_material_index);
+    return std::to_string(p_material_index);
 }
 
-std::string submesh_id_for(const aiMesh* p_mesh, const std::string& p_resource_id, unsigned int p_mesh_index)
+std::string material_id_for(const aiMaterial* p_material, const std::string& p_resource_id, unsigned int p_material_index)
+{
+    return generated_resource_id_for(p_resource_id, "material", material_local_id_for(p_material, p_material_index));
+}
+
+std::string submesh_local_id_for(const aiMesh* p_mesh, unsigned int p_mesh_index)
 {
     if (p_mesh->mName.length > 0)
     {
         return p_mesh->mName.C_Str();
     }
-    return p_resource_id + "_submesh_" + std::to_string(p_mesh_index);
+    return std::to_string(p_mesh_index);
+}
+
+std::string submesh_id_for(const aiMesh* p_mesh, const std::string& p_resource_id, unsigned int p_mesh_index)
+{
+    return generated_resource_id_for(p_resource_id, "submesh", submesh_local_id_for(p_mesh, p_mesh_index));
 }
 
 std::string texture_output_path(const aiString& p_texture_path, const std::string& p_texture_output_dir)
@@ -158,6 +174,7 @@ bool add_texture(
 
     p_textures.push_back(IntermediateMaterialTexture{
         .texture_key = p_texture_key,
+        .file = std::filesystem::path(texture_path.C_Str()).generic_string(),
         .path = texture_output_path(texture_path, p_texture_output_dir),
         .color_space = p_color_space,
         .channel_count = p_channel_count,
@@ -247,10 +264,10 @@ IntermediateMaterial import_material(
         add_texture(p_material, aiTextureType_DIFFUSE, "base_color", "srgb", 4, p_texture_output_dir, result.textures);
     }
 
-    if (!add_texture(p_material, aiTextureType_METALNESS, "roughness_metallic_ao", "linear", 3, p_texture_output_dir, result.textures) &&
-        !add_texture(p_material, aiTextureType_DIFFUSE_ROUGHNESS, "roughness_metallic_ao", "linear", 3, p_texture_output_dir, result.textures))
+    if (!add_texture(p_material, aiTextureType_METALNESS, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures) &&
+        !add_texture(p_material, aiTextureType_DIFFUSE_ROUGHNESS, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures))
     {
-        add_texture(p_material, aiTextureType_AMBIENT_OCCLUSION, "roughness_metallic_ao", "linear", 3, p_texture_output_dir, result.textures);
+        add_texture(p_material, aiTextureType_AMBIENT_OCCLUSION, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures);
     }
 
     return result;
@@ -331,7 +348,8 @@ py::dict to_python(const IntermediateMaterialTexture& p_texture)
 {
     py::dict texture;
     texture["type"] = "image";
-    texture["file"] = p_texture.path;
+    texture["file"] = p_texture.file;
+    texture["path"] = p_texture.path;
     texture["color_space"] = p_texture.color_space;
     texture["channel_count"] = p_texture.channel_count;
 
@@ -368,7 +386,7 @@ py::dict MeshCompiler::compile_mesh(
     const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir);
 
     py::dict result;
-    result["id"] = p_resource_id;
+    result["id"] = p_resource_id + ".mesh";
     result["type"] = "mesh";
 
     py::list submeshes;
