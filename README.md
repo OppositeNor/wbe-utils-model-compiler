@@ -85,10 +85,10 @@ pip install . --no-deps --no-build-isolation
 ```python
 from pathlib import Path
 
-from wbe_utils_model_compiler import WBEModelCompiler
+from wbe_utils_model_compiler import WBEUtilsModelCompiler
 
 
-compiler = WBEModelCompiler()
+compiler = WBEUtilsModelCompiler()
 
 resource = {
 	"id": "cube",

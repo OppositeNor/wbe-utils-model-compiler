@@ -33,7 +33,7 @@ class WBEUtilsModelCompiler:
         res_output_dir: Path,
     ) -> ManifestResource:
         if resource.get("type") != "model":
-            raise ValueError("WBEModelCompiler only supports model resources.")
+            raise ValueError("WBEUtilsModelCompiler only supports model resources.")
 
         source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
