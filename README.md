@@ -93,7 +93,7 @@ compiler = WBEMeshCompiler()
 resource = {
 	"id": "cube",
 	"type": "model",
-	"path": "Cube/glTF/Cube.gltf",
+	"file": "Cube/glTF/Cube.gltf",
 	"graphics_pipeline_ids": ["main_pipeline"],
 	"texture_output_dir": "textures",
 }
@@ -121,7 +121,7 @@ material_resources = compiler.compile_materials(
 {
 	"id": str,
 	"type": "model",
-	"path": str,
+	"file": str,
 	"graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
 }
@@ -166,7 +166,7 @@ material_resources = compiler.compile_materials(
 			"texture_key": str,
 			"texture": {
 				"type": "image",
-				"path": str,
+				"file": str,
 				"color_space": str,
 				"channel_count": int,
 			},

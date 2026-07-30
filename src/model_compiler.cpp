@@ -331,7 +331,7 @@ py::dict to_python(const IntermediateMaterialTexture& p_texture)
 {
     py::dict texture;
     texture["type"] = "image";
-    texture["path"] = p_texture.path;
+    texture["file"] = p_texture.path;
     texture["color_space"] = p_texture.color_space;
     texture["channel_count"] = p_texture.channel_count;
 

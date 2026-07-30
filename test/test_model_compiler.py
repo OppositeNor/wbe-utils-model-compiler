@@ -28,7 +28,7 @@ def _cube_resource() -> dict[str, object]:
     return {
         "id": "cube",
         "type": "mesh_raw",
-        "path": "Cube/glTF/Cube.gltf",
+        "file": "Cube/glTF/Cube.gltf",
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
     }
@@ -93,6 +93,6 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     for texture_binding in material["textures"]:
         texture = texture_binding["texture"]
         assert texture["type"] == "image"
-        assert not Path(texture["path"]).is_absolute()
+        assert not Path(texture["file"]).is_absolute()
         assert texture["color_space"] in {"srgb", "linear"}
         assert texture["channel_count"] in {3, 4}

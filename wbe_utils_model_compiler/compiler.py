@@ -63,7 +63,7 @@ class WBEUtilsMeshCompiler:
         return _native.compile_materials(str(source_path), resource_id, graphics_pipeline_ids, texture_output_dir)
 
     def _resolve_resource_path(self, resource: ManifestResource, manifest_path: Path, res_dir: Path) -> Path:
-        raw_path = Path(str(resource["path"]))
+        raw_path = Path(str(resource["file"]))
         candidates = [raw_path]
         if not raw_path.is_absolute():
             candidates = [res_dir / raw_path, manifest_path.parent / raw_path]
