@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import wbe_utils_model_compiler
-from wbe_utils_model_compiler import WBEMeshCompiler
+from wbe_utils_model_compiler import WBEModelCompiler
 from wbe_utils_model_compiler import _native
 
 
@@ -35,12 +35,12 @@ def _cube_resource() -> dict[str, object]:
 
 
 def test_package_imports() -> None:
-    assert wbe_utils_model_compiler.WBEMeshCompiler is WBEMeshCompiler
+    assert wbe_utils_model_compiler.WBEModelCompiler is WBEModelCompiler
     assert hasattr(_native, "compile_mesh")
 
 
 def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
-    compiler = WBEMeshCompiler()
+    compiler = WBEModelCompiler()
     resource = _cube_resource()
 
     compiled = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
@@ -82,7 +82,7 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
 
 
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
-    compiler = WBEMeshCompiler()
+    compiler = WBEModelCompiler()
     resource = _cube_resource()
 
     materials = compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)

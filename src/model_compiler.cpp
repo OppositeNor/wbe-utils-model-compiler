@@ -513,7 +513,7 @@ py::dict material_to_python(const IntermediateMaterial& p_material, const py::li
 }
 }
 
-py::dict MeshCompiler::compile_mesh(
+py::dict ModelCompiler::compile_mesh(
     const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
     const py::list& p_graphics_pipeline_ids,
@@ -537,7 +537,7 @@ py::dict MeshCompiler::compile_mesh(
     return result;
 }
 
-py::list MeshCompiler::compile_materials(
+py::list ModelCompiler::compile_materials(
     const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
     const py::list& p_graphics_pipeline_ids,

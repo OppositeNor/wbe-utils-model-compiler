@@ -23,20 +23,20 @@
 namespace wbe::model_compiler
 {
 /**
- * Compiles external mesh assets into White Bird Engine resource dictionaries.
+ * Compiles external model assets into White Bird Engine resource dictionaries.
  *
  * The compiler owns no long-lived native resources. Source assets are loaded per call, converted to an internal
  * intermediate representation, and returned as Python-compatible pybind11 objects.
  */
-class MeshCompiler
+class ModelCompiler
 {
 public:
-    MeshCompiler() = default;
-    ~MeshCompiler() = default;
-    MeshCompiler(const MeshCompiler& p_other) = default;
-    MeshCompiler& operator=(const MeshCompiler& p_other) = default;
-    MeshCompiler(MeshCompiler&& p_other) noexcept = default;
-    MeshCompiler& operator=(MeshCompiler&& p_other) noexcept = default;
+    ModelCompiler() = default;
+    ~ModelCompiler() = default;
+    ModelCompiler(const ModelCompiler& p_other) = default;
+    ModelCompiler& operator=(const ModelCompiler& p_other) = default;
+    ModelCompiler(ModelCompiler&& p_other) noexcept = default;
+    ModelCompiler& operator=(ModelCompiler&& p_other) noexcept = default;
 
     /** Compile mesh geometry into a White Bird Engine mesh resource dictionary. */
     pybind11::dict compile_mesh(

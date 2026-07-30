@@ -11,6 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .compiler import ManifestResource, WBEUtilsMeshCompiler
+from .compiler import ManifestResource, WBEUtilsModelCompiler
 
-__all__ = ["ManifestResource", "WBEUtilsMeshCompiler"]
+__all__ = ["ManifestResource", "WBEUtilsModelCompiler"]

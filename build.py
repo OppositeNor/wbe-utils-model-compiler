@@ -23,7 +23,7 @@ import sys
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_BUILD_TYPE = "Debug"
-DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "dependencies" / "assimp"
+DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "assimp"
 
 
 def _run(command: list[str], p_cwd: Path | None = None) -> None:

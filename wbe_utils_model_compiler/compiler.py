@@ -21,7 +21,7 @@ from . import _native
 
 ManifestResource = dict[str, Any]
 
-class WBEUtilsMeshCompiler:
+class WBEUtilsModelCompiler:
     def get_supported_resource_types(self) -> list[str]:
         return ["model"]
 
@@ -33,7 +33,7 @@ class WBEUtilsMeshCompiler:
         res_output_dir: Path,
     ) -> ManifestResource:
         if resource.get("type") != "model":
-            raise ValueError("WBEMeshCompiler only supports model resources.")
+            raise ValueError("WBEModelCompiler only supports model resources.")
 
         source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
