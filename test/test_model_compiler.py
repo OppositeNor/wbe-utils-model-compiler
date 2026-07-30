@@ -43,7 +43,7 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     compiler = WBEMeshCompiler()
     resource = _cube_resource()
 
-    compiled = compiler.compile(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+    compiled = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
     assert isinstance(compiled, dict)
     assert compiled["id"] == "cube"

@@ -25,7 +25,7 @@ class WBEUtilsMeshCompiler:
     def get_supported_resource_types(self) -> list[str]:
         return ["model"]
 
-    def compile(
+    def compile_mesh(
         self,
         resource: ManifestResource,
         manifest_path: Path,

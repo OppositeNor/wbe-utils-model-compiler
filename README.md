@@ -98,7 +98,7 @@ resource = {
 	"texture_output_dir": "textures",
 }
 
-mesh_resource = compiler.compile(
+mesh_resource = compiler.compile_mesh(
 	resource=resource,
 	manifest_path=Path("test-model/manifest.json"),
 	res_dir=Path("test-model"),
