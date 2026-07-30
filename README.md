@@ -1,12 +1,12 @@
-# wbe-utils-mesh-compiler
+# wbe-utils-model-compiler
 
-`wbe-utils-mesh-compiler` compiles external mesh assets into White Bird Engine runtime resource dictionaries.
+`wbe-utils-model-compiler` compiles external mesh assets into White Bird Engine runtime resource dictionaries.
 
 The public API is a Python package. Mesh loading and resource conversion are implemented in a C++23 native extension built with CMake, pybind11, and Assimp.
 
 ## What It Produces
 
-The compiler returns Python dictionaries that match White Bird Engine resource formats. Mesh compilation returns a mesh resource with submeshes, vertex data, indices, and material references. Material compilation returns material resources with pipeline IDs and texture bindings.
+The compiler returns Python dictionaries that match White Bird Engine resource formats. Model compilation returns a mesh resource with submeshes, vertex data, indices, and material references. Material compilation returns material resources with pipeline IDs and texture bindings.
 
 The native layer returns Python-compatible objects directly through pybind11. It does not expose C structs, STL containers, or C++ objects as part of the public Python API.
 
@@ -22,7 +22,7 @@ The native layer returns Python-compatible objects directly through pybind11. It
 ├── src/
 ├── test/
 ├── test-model/
-└── wbe_utils_mesh_compiler/
+└── wbe_utils_model_compiler/
 ```
 
 Assimp is expected to exist beside this repository:
@@ -85,14 +85,14 @@ pip install . --no-deps --no-build-isolation
 ```python
 from pathlib import Path
 
-from wbe_utils_mesh_compiler import WBEMeshCompiler
+from wbe_utils_model_compiler import WBEMeshCompiler
 
 
 compiler = WBEMeshCompiler()
 
 resource = {
 	"id": "cube",
-	"type": "mesh",
+	"type": "model",
 	"path": "Cube/glTF/Cube.gltf",
 	"graphics_pipeline_ids": ["main_pipeline"],
 	"texture_output_dir": "textures",
@@ -120,7 +120,7 @@ material_resources = compiler.compile_materials(
 ```python
 {
 	"id": str,
-	"type": "mesh_raw",
+	"type": "model",
 	"path": str,
 	"graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,

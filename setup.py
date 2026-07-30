@@ -39,7 +39,7 @@ class CMakeExtension(Extension):
 class CMakeBuild(build_ext):
     def run(self) -> None:
         if shutil.which("cmake") is None:
-            raise RuntimeError("CMake is required to build the native mesh compiler extension.")
+            raise RuntimeError("CMake is required to build the native model compiler extension.")
         super().run()
 
     def build_extension(self, p_extension: Extension) -> None:
@@ -69,13 +69,13 @@ class CMakeBuild(build_ext):
 
 
 setup(
-    name="wbe-utils-mesh-compiler",
+    name="wbe-utils-model-compiler",
     version="0.1.0",
     description="White Bird Engine mesh resource compiler.",
     long_description=README_PATH.read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
-    packages=["wbe_utils_mesh_compiler"],
-    ext_modules=[CMakeExtension("wbe_utils_mesh_compiler._native")],
+    packages=["wbe_utils_model_compiler"],
+    ext_modules=[CMakeExtension("wbe_utils_model_compiler._native")],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
     python_requires=">=3.10",

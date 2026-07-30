@@ -23,7 +23,7 @@ ManifestResource = dict[str, Any]
 
 class WBEUtilsMeshCompiler:
     def get_supported_resource_types(self) -> list[str]:
-        return ["mesh_raw"]
+        return ["model"]
 
     def compile(
         self,
@@ -32,8 +32,8 @@ class WBEUtilsMeshCompiler:
         res_dir: Path,
         res_output_dir: Path,
     ) -> ManifestResource:
-        if resource.get("type") != "mesh_raw":
-            raise ValueError("WBEMeshCompiler only supports mesh_raw resources.")
+        if resource.get("type") != "model":
+            raise ValueError("WBEMeshCompiler only supports model resources.")
 
         source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)

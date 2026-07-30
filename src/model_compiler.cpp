@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-#include "wbe_utils_mesh_compiler/mesh_compiler.hh"
+#include "wbe_utils_model_compiler/model_compiler.hh"
 
 #include <algorithm>
 #include <array>
@@ -30,7 +30,7 @@
 
 namespace py = pybind11;
 
-namespace wbe::mesh_compiler
+namespace wbe::model_compiler
 {
 namespace
 {

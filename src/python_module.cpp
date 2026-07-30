@@ -12,7 +12,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-#include "wbe_utils_mesh_compiler/mesh_compiler.hh"
+#include "wbe_utils_model_compiler/model_compiler.hh"
 
 #include <filesystem>
 #include <string>
@@ -23,7 +23,7 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(_native, p_module)
 {
-    p_module.doc() = "Native backend for the White Bird Engine mesh compiler.";
+    p_module.doc() = "Native backend for the White Bird Engine model compiler.";
 
     p_module.def(
         "compile_mesh",
@@ -31,7 +31,7 @@ PYBIND11_MODULE(_native, p_module)
            const std::string& p_resource_id,
            const py::list& p_graphics_pipeline_ids,
            const std::string& p_texture_output_dir) -> py::dict {
-            const wbe::mesh_compiler::MeshCompiler compiler;
+            const wbe::model_compiler::MeshCompiler compiler;
             return compiler.compile_mesh(std::filesystem::path(p_source_path), p_resource_id, p_graphics_pipeline_ids, p_texture_output_dir);
         },
         py::arg("source_path"),
@@ -45,7 +45,7 @@ PYBIND11_MODULE(_native, p_module)
            const std::string& p_resource_id,
            const py::list& p_graphics_pipeline_ids,
            const std::string& p_texture_output_dir) -> py::list {
-            const wbe::mesh_compiler::MeshCompiler compiler;
+            const wbe::model_compiler::MeshCompiler compiler;
             return compiler.compile_materials(std::filesystem::path(p_source_path), p_resource_id, p_graphics_pipeline_ids, p_texture_output_dir);
         },
         py::arg("source_path"),

@@ -77,7 +77,7 @@ def clean() -> None:
     for path in ROOT_DIR.glob("*.egg-info"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
-    for path in (ROOT_DIR / "wbe_utils_mesh_compiler").glob("_native*.so"):
+    for path in (ROOT_DIR / "wbe_utils_model_compiler").glob("_native*.so"):
         if path.is_file():
             path.unlink()
     for path in ROOT_DIR.glob("**/__pycache__"):
@@ -89,7 +89,7 @@ def clean() -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build the White Bird Engine mesh compiler.")
+    parser = argparse.ArgumentParser(description="Build the White Bird Engine model compiler.")
     parser.add_argument("operation", choices=["configure", "build", "test", "clean"], help="Build operation to run.")
     parser.add_argument("--build-type", default=DEFAULT_BUILD_TYPE, help="CMake build type.")
     parser.add_argument(

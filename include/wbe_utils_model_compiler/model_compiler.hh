@@ -12,15 +12,15 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-#ifndef WBE_FILE_MESH_COMPILER_HH
-#define WBE_FILE_MESH_COMPILER_HH
+#ifndef WBE_FILE_MODEL_COMPILER_HH
+#define WBE_FILE_MODEL_COMPILER_HH
 
 #include <filesystem>
 #include <string>
 
 #include <pybind11/pybind11.h>
 
-namespace wbe::mesh_compiler
+namespace wbe::model_compiler
 {
 /**
  * Compiles external mesh assets into White Bird Engine resource dictionaries.

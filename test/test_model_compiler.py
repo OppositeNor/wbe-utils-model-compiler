@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import wbe_utils_mesh_compiler
-from wbe_utils_mesh_compiler import WBEMeshCompiler
-from wbe_utils_mesh_compiler import _native
+import wbe_utils_model_compiler
+from wbe_utils_model_compiler import WBEMeshCompiler
+from wbe_utils_model_compiler import _native
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -35,7 +35,7 @@ def _cube_resource() -> dict[str, object]:
 
 
 def test_package_imports() -> None:
-    assert wbe_utils_mesh_compiler.WBEMeshCompiler is WBEMeshCompiler
+    assert wbe_utils_model_compiler.WBEMeshCompiler is WBEMeshCompiler
     assert hasattr(_native, "compile_mesh")
 
 

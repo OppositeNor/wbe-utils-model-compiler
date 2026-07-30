@@ -13,7 +13,7 @@
 # limitations under the License.
 cmake_minimum_required(VERSION 3.22)
 
-project(wbe_utils_mesh_compiler LANGUAGES CXX)
+project(wbe_utils_model_compiler LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 23)
@@ -54,11 +54,11 @@ else()
 endif()
 
 if(NOT DEFINED PYTHON_EXTENSION_OUTPUT_DIRECTORY)
-    set(PYTHON_EXTENSION_OUTPUT_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/wbe_utils_mesh_compiler")
+    set(PYTHON_EXTENSION_OUTPUT_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/wbe_utils_model_compiler")
 endif()
 
 pybind11_add_module(_native
-    src/mesh_compiler.cpp
+    src/model_compiler.cpp
     src/python_module.cpp
 )
 
