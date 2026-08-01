@@ -51,6 +51,7 @@ def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFA
         str(build_dir),
         f"-DCMAKE_BUILD_TYPE={p_build_type}",
         f"-DWBE_ASSIMP_ROOT={p_assimp_root.resolve()}",
+        "-G", "Ninja"
     ]
     _run(command)
 

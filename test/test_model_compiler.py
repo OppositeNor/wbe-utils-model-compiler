@@ -57,6 +57,7 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert submesh["material_id"] == "cube.material.Cube"
     assert "vertices_data" not in submesh
     assert "indices_data" not in submesh
+    assert submesh["geometry_path"] == "cube.mesh.geometry.bin"
     assert isinstance(submesh["geometry_path"], str)
     assert isinstance(submesh["geometry_sections"], list)
     geometry_path = tmp_path / submesh["geometry_path"]
@@ -97,7 +98,7 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     assert material["textures"]
 
     texture_keys = {texture["texture_key"] for texture in material["textures"]}
-    assert "base_color" in texture_keys
+    assert "albedo" in texture_keys
     assert "roughness_metallic_ao" in texture_keys
     for texture_binding in material["textures"]:
         texture = texture_binding["texture"]

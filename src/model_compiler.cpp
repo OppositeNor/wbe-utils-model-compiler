@@ -277,9 +277,14 @@ IntermediateMaterial import_material(
     IntermediateMaterial result;
     result.id = material_id_for(p_material, p_resource_id, p_material_index);
 
-    if (!add_texture(p_material, aiTextureType_BASE_COLOR, "base_color", "srgb", 4, p_texture_output_dir, result.textures))
+    if (!add_texture(p_material, aiTextureType_BASE_COLOR, "albedo", "srgb", 4, p_texture_output_dir, result.textures))
     {
-        add_texture(p_material, aiTextureType_DIFFUSE, "base_color", "srgb", 4, p_texture_output_dir, result.textures);
+        add_texture(p_material, aiTextureType_DIFFUSE, "albedo", "srgb", 4, p_texture_output_dir, result.textures);
+    }
+
+    if (!add_texture(p_material, aiTextureType_NORMALS, "normal", "rgb", 3, p_texture_output_dir, result.textures))
+    {
+        add_texture(p_material, aiTextureType_HEIGHT, "normal", "rgb", 3, p_texture_output_dir, result.textures);
     }
 
     if (!add_texture(p_material, aiTextureType_METALNESS, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures) &&
@@ -445,10 +450,44 @@ std::string geometry_path_for(const std::string& p_file_name, const std::string&
 }
 
 py::list write_submesh_geometry(
-    const IntermediateSubmesh& p_submesh, const std::filesystem::path& p_geometry_output_dir, const std::string& p_geometry_path_prefix, std::string& p_geometry_path)
+    const IntermediateSubmesh& p_submesh, std::ofstream& p_output_file, const std::filesystem::path& p_output_path, size_t& p_offset)
+{
+    py::list sections;
+    write_vec3_section(p_output_file, sections, p_output_path, p_offset, "position", p_submesh.vertices, &IntermediateVertex::position, true);
+    write_vec3_section(p_output_file, sections, p_output_path, p_offset, "normal", p_submesh.vertices, &IntermediateVertex::normal, p_submesh.has_normal);
+    write_vec3_section(
+        p_output_file, sections, p_output_path, p_offset, "tangent", p_submesh.vertices, &IntermediateVertex::tangent, p_submesh.has_tangent_space);
+    write_vec3_section(p_output_file,
+        sections,
+        p_output_path,
+        p_offset,
+        "bitangent",
+        p_submesh.vertices,
+        &IntermediateVertex::bitangent,
+        p_submesh.has_tangent_space);
+    write_vec2_section(p_output_file, sections, p_output_path, p_offset, p_submesh.vertices, p_submesh.has_uv);
+    write_index_section(p_output_file, sections, p_output_path, p_offset, p_submesh);
+    return sections;
+}
+
+py::dict to_python(const IntermediateSubmesh& p_submesh, const py::list& p_geometry_sections, const std::string& p_geometry_path)
+{
+    py::dict result;
+    result["id"] = p_submesh.id;
+    result["type"] = "submesh";
+    result["geometry_sections"] = p_geometry_sections;
+    result["geometry_path"] = p_geometry_path;
+    result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
+    return result;
+}
+
+py::list submeshes_to_python(const IntermediateScene& p_scene,
+    const std::string& p_mesh_id,
+    const std::filesystem::path& p_geometry_output_dir,
+    const std::string& p_geometry_path_prefix)
 {
     std::filesystem::create_directories(p_geometry_output_dir);
-    const std::string file_name = sanitize_file_stem(p_submesh.id) + ".geometry.bin";
+    const std::string file_name = sanitize_file_stem(p_mesh_id) + ".geometry.bin";
     const std::filesystem::path output_path = p_geometry_output_dir / file_name;
     std::ofstream output_file(output_path, std::ios::binary);
     if (!output_file.is_open())
@@ -456,28 +495,13 @@ py::list write_submesh_geometry(
         throw std::runtime_error("Failed to open model geometry binary for writing: " + output_path.generic_string());
     }
 
+    const std::string geometry_path = geometry_path_for(file_name, p_geometry_path_prefix);
     size_t offset = 0;
-    py::list sections;
-    write_vec3_section(output_file, sections, output_path, offset, "position", p_submesh.vertices, &IntermediateVertex::position, true);
-    write_vec3_section(output_file, sections, output_path, offset, "normal", p_submesh.vertices, &IntermediateVertex::normal, p_submesh.has_normal);
-    write_vec3_section(output_file, sections, output_path, offset, "tangent", p_submesh.vertices, &IntermediateVertex::tangent, p_submesh.has_tangent_space);
-    write_vec3_section(output_file, sections, output_path, offset, "bitangent", p_submesh.vertices, &IntermediateVertex::bitangent, p_submesh.has_tangent_space);
-    write_vec2_section(output_file, sections, output_path, offset, p_submesh.vertices, p_submesh.has_uv);
-    write_index_section(output_file, sections, output_path, offset, p_submesh);
-    p_geometry_path = geometry_path_for(file_name, p_geometry_path_prefix);
-    return sections;
-}
-
-py::dict to_python(
-    const IntermediateSubmesh& p_submesh, const std::filesystem::path& p_geometry_output_dir, const std::string& p_geometry_path_prefix)
-{
-    py::dict result;
-    result["id"] = p_submesh.id;
-    result["type"] = "submesh";
-    std::string geometry_path;
-    result["geometry_sections"] = write_submesh_geometry(p_submesh, p_geometry_output_dir, p_geometry_path_prefix, geometry_path);
-    result["geometry_path"] = geometry_path;
-    result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
+    py::list result;
+    for (const IntermediateSubmesh& submesh : p_scene.submeshes)
+    {
+        result.append(to_python(submesh, write_submesh_geometry(submesh, output_file, output_path, offset), geometry_path));
+    }
     return result;
 }
 
@@ -525,15 +549,10 @@ py::dict ModelCompiler::compile_mesh(
     const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir);
 
     py::dict result;
-    result["id"] = p_resource_id + ".mesh";
+    const std::string mesh_id = p_resource_id + ".mesh";
+    result["id"] = mesh_id;
     result["type"] = "mesh";
-
-    py::list submeshes;
-    for (const IntermediateSubmesh& submesh : scene.submeshes)
-    {
-        submeshes.append(to_python(submesh, p_geometry_output_dir, p_geometry_path_prefix));
-    }
-    result["submeshes"] = submeshes;
+    result["submeshes"] = submeshes_to_python(scene, mesh_id, p_geometry_output_dir, p_geometry_path_prefix);
     return result;
 }
 
