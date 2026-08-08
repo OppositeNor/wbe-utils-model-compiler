@@ -47,6 +47,9 @@ class WBEUtilsModelCompiler:
 
         resource_id = str(resource.get("id", source_path.stem))
         graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
+        vertex_position_scale = float(resource.get("scale_vertex_pos", 1.0))
+        source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
+        target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
         return _native.compile_mesh(
             str(source_path),
             resource_id,
@@ -54,6 +57,13 @@ class WBEUtilsModelCompiler:
             texture_output_dir,
             str(geometry_output_dir),
             geometry_path_prefix,
+            vertex_position_scale,
+            source_up,
+            source_right,
+            source_front,
+            target_up,
+            target_right,
+            target_front,
         )
 
     def compile_materials(
@@ -115,6 +125,12 @@ class WBEUtilsModelCompiler:
         geometry_output_dir.mkdir(parents=True, exist_ok=True)
         geometry_path_prefix = "" if geometry_rel_dir.as_posix() == "." else geometry_rel_dir.as_posix()
         return geometry_output_dir, geometry_path_prefix
+
+    def _resolve_coordinate_space(self, resource: ManifestResource, key: str) -> tuple[str, str, str]:
+        space = resource.get(key, {})
+        if not isinstance(space, dict):
+            raise ValueError(f"{key} must be a dictionary.")
+        return str(space.get("up", "y")), str(space.get("right", "x")), str(space.get("front", "z"))
 
     def _resolve_resource_path(self, resource: ManifestResource, manifest_path: Path, res_dir: Path) -> Path:
         raw_path = Path(str(resource["file"]))

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -79,6 +80,120 @@ struct IntermediateScene
     std::vector<IntermediateSubmesh> submeshes;
     std::vector<IntermediateMaterial> materials;
 };
+
+struct AxisDirection
+{
+    size_t axis = 0;
+    float sign = 1.0F;
+};
+
+struct CoordinateSpace
+{
+    AxisDirection up;
+    AxisDirection right;
+    AxisDirection front;
+};
+
+struct VertexTransform
+{
+    std::array<std::array<float, 3>, 3> basis = {};
+    float position_scale = 1.0F;
+    bool reverse_winding = false;
+};
+
+AxisDirection parse_axis_direction(const std::string& p_direction)
+{
+    size_t character_index = 0;
+    float sign = 1.0F;
+    if (!p_direction.empty() && (p_direction[0] == '+' || p_direction[0] == '-'))
+    {
+        sign = p_direction[0] == '-' ? -1.0F : 1.0F;
+        character_index = 1;
+    }
+    if (p_direction.size() != character_index + 1)
+    {
+        throw std::invalid_argument("Model direction must be one of x, y, z, +x, +y, +z, -x, -y, or -z: " + p_direction);
+    }
+
+    const char axis_name = p_direction[character_index];
+    if (axis_name < 'x' || axis_name > 'z')
+    {
+        throw std::invalid_argument("Model direction must be one of x, y, z, +x, +y, +z, -x, -y, or -z: " + p_direction);
+    }
+    return AxisDirection{.axis = static_cast<size_t>(axis_name - 'x'), .sign = sign};
+}
+
+CoordinateSpace make_coordinate_space(const std::string& p_up_direction,
+    const std::string& p_right_direction,
+    const std::string& p_front_direction,
+    const std::string& p_space_name)
+{
+    const CoordinateSpace result{
+        .up = parse_axis_direction(p_up_direction),
+        .right = parse_axis_direction(p_right_direction),
+        .front = parse_axis_direction(p_front_direction),
+    };
+    if (result.up.axis == result.right.axis || result.up.axis == result.front.axis || result.right.axis == result.front.axis)
+    {
+        throw std::invalid_argument(
+            "Model " + p_space_name + " up, right, and front directions must use three different axes.");
+    }
+    return result;
+}
+
+float determinant(const std::array<std::array<float, 3>, 3>& p_matrix)
+{
+    return p_matrix[0][0] * (p_matrix[1][1] * p_matrix[2][2] - p_matrix[1][2] * p_matrix[2][1]) -
+           p_matrix[0][1] * (p_matrix[1][0] * p_matrix[2][2] - p_matrix[1][2] * p_matrix[2][0]) +
+           p_matrix[0][2] * (p_matrix[1][0] * p_matrix[2][1] - p_matrix[1][1] * p_matrix[2][0]);
+}
+
+void add_axis_mapping(std::array<std::array<float, 3>, 3>& p_basis,
+    const AxisDirection& p_source_direction,
+    const AxisDirection& p_target_direction)
+{
+    p_basis[p_target_direction.axis][p_source_direction.axis] = p_source_direction.sign * p_target_direction.sign;
+}
+
+VertexTransform make_vertex_transform(float p_position_scale,
+    const std::string& p_source_up_direction,
+    const std::string& p_source_right_direction,
+    const std::string& p_source_front_direction,
+    const std::string& p_target_up_direction,
+    const std::string& p_target_right_direction,
+    const std::string& p_target_front_direction)
+{
+    if (!std::isfinite(p_position_scale))
+    {
+        throw std::invalid_argument("scale_vertex_pos must be finite.");
+    }
+
+    const CoordinateSpace source =
+        make_coordinate_space(p_source_up_direction, p_source_right_direction, p_source_front_direction, "source_space");
+    const CoordinateSpace target =
+        make_coordinate_space(p_target_up_direction, p_target_right_direction, p_target_front_direction, "target_space");
+
+    VertexTransform result;
+    result.position_scale = p_position_scale;
+    add_axis_mapping(result.basis, source.up, target.up);
+    add_axis_mapping(result.basis, source.right, target.right);
+    add_axis_mapping(result.basis, source.front, target.front);
+    result.reverse_winding = determinant(result.basis) < 0.0F;
+    return result;
+}
+
+std::array<float, 3> transform_vector(const std::array<float, 3>& p_value, const VertexTransform& p_transform)
+{
+    std::array<float, 3> result = {};
+    for (size_t output_axis = 0; output_axis < result.size(); ++output_axis)
+    {
+        for (size_t input_axis = 0; input_axis < p_value.size(); ++input_axis)
+        {
+            result[output_axis] += p_transform.basis[output_axis][input_axis] * p_value[input_axis];
+        }
+    }
+    return result;
+}
 
 py::dict make_vec3(const std::array<float, 3>& p_value)
 {
@@ -211,7 +326,11 @@ void apply_bones(const aiMesh* p_mesh, std::vector<IntermediateVertex>& p_vertic
     }
 }
 
-IntermediateSubmesh import_submesh(const aiScene* p_scene, const aiMesh* p_mesh, const std::string& p_resource_id, unsigned int p_mesh_index)
+IntermediateSubmesh import_submesh(const aiScene* p_scene,
+    const aiMesh* p_mesh,
+    const std::string& p_resource_id,
+    unsigned int p_mesh_index,
+    const VertexTransform& p_transform)
 {
     IntermediateSubmesh result;
     result.id = submesh_id_for(p_mesh, p_resource_id, p_mesh_index);
@@ -231,7 +350,11 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene, const aiMesh* p_mesh,
     {
         IntermediateVertex vertex;
         const aiVector3D& position = p_mesh->mVertices[vertex_index];
-        vertex.position = {position.x, position.y, position.z};
+        vertex.position = transform_vector({position.x, position.y, position.z}, p_transform);
+        for (float& component : vertex.position)
+        {
+            component *= p_transform.position_scale;
+        }
 
         if (result.has_uv)
         {
@@ -242,14 +365,14 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene, const aiMesh* p_mesh,
         if (result.has_normal)
         {
             const aiVector3D& normal = p_mesh->mNormals[vertex_index];
-            vertex.normal = {normal.x, normal.y, normal.z};
+            vertex.normal = transform_vector({normal.x, normal.y, normal.z}, p_transform);
         }
         if (result.has_tangent_space)
         {
             const aiVector3D& tangent = p_mesh->mTangents[vertex_index];
             const aiVector3D& bitangent = p_mesh->mBitangents[vertex_index];
-            vertex.tangent = {tangent.x, tangent.y, tangent.z};
-            vertex.bitangent = {bitangent.x, bitangent.y, bitangent.z};
+            vertex.tangent = transform_vector({tangent.x, tangent.y, tangent.z}, p_transform);
+            vertex.bitangent = transform_vector({bitangent.x, bitangent.y, bitangent.z}, p_transform);
         }
         result.vertices.push_back(vertex);
     }
@@ -262,6 +385,14 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene, const aiMesh* p_mesh,
         for (unsigned int index_index = 0; index_index < face.mNumIndices; ++index_index)
         {
             result.indices.push_back(face.mIndices[index_index]);
+        }
+    }
+
+    if (p_transform.reverse_winding)
+    {
+        for (size_t index = 0; index + 2 < result.indices.size(); index += 3)
+        {
+            std::swap(result.indices[index + 1], result.indices[index + 2]);
         }
     }
 
@@ -296,7 +427,10 @@ IntermediateMaterial import_material(
     return result;
 }
 
-IntermediateScene import_scene(const std::filesystem::path& p_source_path, const std::string& p_resource_id, const std::string& p_texture_output_dir)
+IntermediateScene import_scene(const std::filesystem::path& p_source_path,
+    const std::string& p_resource_id,
+    const std::string& p_texture_output_dir,
+    const VertexTransform& p_transform)
 {
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(
@@ -318,7 +452,8 @@ IntermediateScene import_scene(const std::filesystem::path& p_source_path, const
 
     for (unsigned int mesh_index = 0; mesh_index < scene->mNumMeshes; ++mesh_index)
     {
-        result.submeshes.push_back(import_submesh(scene, scene->mMeshes[mesh_index], p_resource_id, mesh_index));
+        result.submeshes.push_back(
+            import_submesh(scene, scene->mMeshes[mesh_index], p_resource_id, mesh_index, p_transform));
     }
 
     return result;
@@ -543,10 +678,24 @@ py::dict ModelCompiler::compile_mesh(
     const py::list& p_graphics_pipeline_ids,
     const std::string& p_texture_output_dir,
     const std::filesystem::path& p_geometry_output_dir,
-    const std::string& p_geometry_path_prefix) const
+    const std::string& p_geometry_path_prefix,
+    float p_vertex_position_scale,
+    const std::string& p_source_up_direction,
+    const std::string& p_source_right_direction,
+    const std::string& p_source_front_direction,
+    const std::string& p_target_up_direction,
+    const std::string& p_target_right_direction,
+    const std::string& p_target_front_direction) const
 {
     (void)p_graphics_pipeline_ids;
-    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir);
+    const VertexTransform transform = make_vertex_transform(p_vertex_position_scale,
+        p_source_up_direction,
+        p_source_right_direction,
+        p_source_front_direction,
+        p_target_up_direction,
+        p_target_right_direction,
+        p_target_front_direction);
+    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir, transform);
 
     py::dict result;
     const std::string mesh_id = p_resource_id + ".mesh";
@@ -562,7 +711,8 @@ py::list ModelCompiler::compile_materials(
     const py::list& p_graphics_pipeline_ids,
     const std::string& p_texture_output_dir) const
 {
-    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir);
+    const IntermediateScene scene = import_scene(
+        p_source_path, p_resource_id, p_texture_output_dir, make_vertex_transform(1.0F, "y", "x", "z", "y", "x", "z"));
 
     py::list result;
     for (const IntermediateMaterial& material : scene.materials)

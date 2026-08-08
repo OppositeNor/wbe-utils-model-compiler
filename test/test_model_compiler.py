@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import struct
 
+import pytest
 import wbe_utils_model_compiler
 from wbe_utils_model_compiler import WBEUtilsModelCompiler
 from wbe_utils_model_compiler import _native
@@ -32,6 +34,24 @@ def _cube_resource() -> dict[str, object]:
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
     }
+
+
+def _section_data(geometry_path: Path, submesh: dict[str, object], slot: str) -> bytes:
+    sections = submesh["geometry_sections"]
+    assert isinstance(sections, list)
+    section = next(section for section in sections if section["slot"] == slot)
+    data = geometry_path.read_bytes()
+    start = section["start"]
+    size = section["size"]
+    return data[start:start + size]
+
+
+def _vec3_section(geometry_path: Path, submesh: dict[str, object], slot: str) -> list[tuple[float, float, float]]:
+    return list(struct.iter_unpack("<fff", _section_data(geometry_path, submesh, slot)))
+
+
+def _index_section(geometry_path: Path, submesh: dict[str, object]) -> list[int]:
+    return [value[0] for value in struct.iter_unpack("<I", _section_data(geometry_path, submesh, "index"))]
 
 
 def test_package_imports() -> None:
@@ -80,6 +100,83 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert sections["position"]["size"] % (3 * 4) == 0
     assert sections["uv"]["size"] % (2 * 4) == 0
     assert sections["index"]["size"] % (3 * 4) == 0
+
+
+def test_mesh_compilation_scales_positions_and_converts_between_coordinate_spaces(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler()
+    baseline_output_dir = tmp_path / "baseline"
+    converted_output_dir = tmp_path / "converted"
+    baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
+    resource = {
+        **_cube_resource(),
+        "scale_vertex_pos": 2.5,
+        "source_space": {"up": "+z", "right": "+x", "front": "-y"},
+        "target_space": {"up": "+y", "right": "-z", "front": "-x"},
+    }
+    converted = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, converted_output_dir)
+
+    baseline_submesh = baseline["submeshes"][0]
+    converted_submesh = converted["submeshes"][0]
+    baseline_path = baseline_output_dir / baseline_submesh["geometry_path"]
+    converted_path = converted_output_dir / converted_submesh["geometry_path"]
+
+    baseline_positions = _vec3_section(baseline_path, baseline_submesh, "position")
+    converted_positions = _vec3_section(converted_path, converted_submesh, "position")
+    for baseline_position, converted_position in zip(baseline_positions, converted_positions, strict=True):
+        expected = (baseline_position[1] * 2.5, baseline_position[2] * 2.5, -baseline_position[0] * 2.5)
+        assert converted_position == pytest.approx(expected)
+
+    for slot in ("normal", "tangent", "bitangent"):
+        baseline_vectors = _vec3_section(baseline_path, baseline_submesh, slot)
+        converted_vectors = _vec3_section(converted_path, converted_submesh, slot)
+        for baseline_vector, converted_vector in zip(baseline_vectors, converted_vectors, strict=True):
+            assert converted_vector == pytest.approx((baseline_vector[1], baseline_vector[2], -baseline_vector[0]))
+
+    baseline_indices = _index_section(baseline_path, baseline_submesh)
+    converted_indices = _index_section(converted_path, converted_submesh)
+    expected_indices: list[int] = []
+    for index in range(0, len(baseline_indices), 3):
+        expected_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
+    assert converted_indices == expected_indices
+
+
+@pytest.mark.parametrize("space_key", ["source_space", "target_space"])
+def test_mesh_compilation_defaults_front_to_positive_z(tmp_path: Path, space_key: str) -> None:
+    compiler = WBEUtilsModelCompiler()
+    baseline_output_dir = tmp_path / "baseline"
+    converted_output_dir = tmp_path / space_key
+    baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
+    resource = {**_cube_resource(), space_key: {"front": "-z"}}
+    converted = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, converted_output_dir)
+
+    baseline_submesh = baseline["submeshes"][0]
+    converted_submesh = converted["submeshes"][0]
+    baseline_path = baseline_output_dir / baseline_submesh["geometry_path"]
+    converted_path = converted_output_dir / converted_submesh["geometry_path"]
+    baseline_positions = _vec3_section(baseline_path, baseline_submesh, "position")
+    converted_positions = _vec3_section(converted_path, converted_submesh, "position")
+
+    for baseline_position, converted_position in zip(baseline_positions, converted_positions, strict=True):
+        assert converted_position == pytest.approx((baseline_position[0], baseline_position[1], -baseline_position[2]))
+
+
+@pytest.mark.parametrize("space_key", ["source_space", "target_space"])
+@pytest.mark.parametrize("direction", ["X", "forward", "++x", ""])
+def test_mesh_compilation_rejects_invalid_direction(tmp_path: Path, space_key: str, direction: str) -> None:
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), space_key: {"up": direction}}
+
+    with pytest.raises(ValueError, match="Model direction must be one of"):
+        compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+
+@pytest.mark.parametrize("space_key", ["source_space", "target_space"])
+def test_mesh_compilation_rejects_reused_axis(tmp_path: Path, space_key: str) -> None:
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), space_key: {"up": "x", "right": "-x"}}
+
+    with pytest.raises(ValueError, match="must use three different axes"):
+        compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
 
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:

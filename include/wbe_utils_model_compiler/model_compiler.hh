@@ -38,14 +38,28 @@ public:
     ModelCompiler(ModelCompiler&& p_other) noexcept = default;
     ModelCompiler& operator=(ModelCompiler&& p_other) noexcept = default;
 
-    /** Compile mesh geometry into a White Bird Engine mesh resource dictionary. */
+    /**
+     * Compile mesh geometry into a White Bird Engine mesh resource dictionary.
+     *
+     * Source-space positions and direction vectors are converted to the target space. Each space must assign up,
+     * right, and front to three distinct signed axes.
+     *
+     * @throws std::invalid_argument If the scale is not finite or either coordinate-space declaration is invalid.
+     */
     pybind11::dict compile_mesh(
         const std::filesystem::path& p_source_path,
         const std::string& p_resource_id,
         const pybind11::list& p_graphics_pipeline_ids,
         const std::string& p_texture_output_dir,
         const std::filesystem::path& p_geometry_output_dir,
-        const std::string& p_geometry_path_prefix) const;
+        const std::string& p_geometry_path_prefix,
+        float p_vertex_position_scale = 1.0F,
+        const std::string& p_source_up_direction = "y",
+        const std::string& p_source_right_direction = "x",
+        const std::string& p_source_front_direction = "z",
+        const std::string& p_target_up_direction = "y",
+        const std::string& p_target_right_direction = "x",
+        const std::string& p_target_front_direction = "z") const;
 
     /** Compile source materials into White Bird Engine material resource dictionaries. */
     pybind11::list compile_materials(

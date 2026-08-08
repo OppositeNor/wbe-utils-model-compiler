@@ -126,10 +126,21 @@ material_resources = compiler.compile_materials(
 	"graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
 	"geometry_output_dir": str,
+	"scale_vertex_pos": float,
+	"source_space": {
+		"up": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
+		"right": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
+		"front": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
+	},
+	"target_space": {
+		"up": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
+		"right": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
+		"front": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
+	},
 }
 ```
 
-`id`, `graphics_pipeline_ids`, `texture_output_dir`, and `geometry_output_dir` are optional at runtime. When `id` is omitted, the source file stem is used. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`.
+All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
 ## Mesh Resource Output
 

@@ -32,21 +32,42 @@ PYBIND11_MODULE(_native, p_module)
            const py::list& p_graphics_pipeline_ids,
            const std::string& p_texture_output_dir,
            const std::string& p_geometry_output_dir,
-           const std::string& p_geometry_path_prefix) -> py::dict {
+           const std::string& p_geometry_path_prefix,
+           float p_vertex_position_scale,
+           const std::string& p_source_up_direction,
+           const std::string& p_source_right_direction,
+           const std::string& p_source_front_direction,
+           const std::string& p_target_up_direction,
+           const std::string& p_target_right_direction,
+           const std::string& p_target_front_direction) -> py::dict {
             const wbe::model_compiler::ModelCompiler compiler;
             return compiler.compile_mesh(std::filesystem::path(p_source_path),
                 p_resource_id,
                 p_graphics_pipeline_ids,
                 p_texture_output_dir,
                 std::filesystem::path(p_geometry_output_dir),
-                p_geometry_path_prefix);
+                p_geometry_path_prefix,
+                p_vertex_position_scale,
+                p_source_up_direction,
+                p_source_right_direction,
+                p_source_front_direction,
+                p_target_up_direction,
+                p_target_right_direction,
+                p_target_front_direction);
         },
         py::arg("source_path"),
         py::arg("resource_id"),
         py::arg("graphics_pipeline_ids"),
         py::arg("texture_output_dir"),
         py::arg("geometry_output_dir"),
-        py::arg("geometry_path_prefix"));
+        py::arg("geometry_path_prefix"),
+        py::arg("vertex_position_scale") = 1.0F,
+        py::arg("source_up_direction") = "y",
+        py::arg("source_right_direction") = "x",
+        py::arg("source_front_direction") = "z",
+        py::arg("target_up_direction") = "y",
+        py::arg("target_right_direction") = "x",
+        py::arg("target_front_direction") = "z");
 
     p_module.def(
         "compile_materials",
