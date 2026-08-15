@@ -78,7 +78,10 @@ class WBEUtilsModelCompiler:
         texture_output_dir = str(resource.get("texture_output_dir", ""))
         resource_id = str(resource.get("id", source_path.stem))
         graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
-        material_resources = _native.compile_materials(str(source_path), resource_id, graphics_pipeline_ids, texture_output_dir)
+        masked_graphics_pipeline_ids = list(resource.get("masked_graphics_pipeline_ids", []))
+        material_resources = _native.compile_materials(
+            str(source_path), resource_id, graphics_pipeline_ids, masked_graphics_pipeline_ids, texture_output_dir
+        )
         self._normalize_material_texture_files(material_resources, source_path, res_dir)
         return material_resources
 

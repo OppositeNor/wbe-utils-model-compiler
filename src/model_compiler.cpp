@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <assimp/Importer.hpp>
+#include <assimp/GltfMaterial.h>
 #include <assimp/material.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -73,6 +74,7 @@ struct IntermediateMaterial
 {
     std::string id;
     std::vector<IntermediateMaterialTexture> textures;
+    bool masked = false;
 };
 
 struct IntermediateScene
@@ -407,6 +409,9 @@ IntermediateMaterial import_material(
 {
     IntermediateMaterial result;
     result.id = material_id_for(p_material, p_resource_id, p_material_index);
+    aiString alpha_mode;
+    result.masked =
+        p_material->Get(AI_MATKEY_GLTF_ALPHAMODE, alpha_mode) == AI_SUCCESS && std::string(alpha_mode.C_Str()) == "MASK";
 
     if (!add_texture(p_material, aiTextureType_BASE_COLOR, "albedo", "srgb", 4, p_texture_output_dir, result.textures))
     {
@@ -655,12 +660,17 @@ py::dict to_python(const IntermediateMaterialTexture& p_texture)
     return result;
 }
 
-py::dict material_to_python(const IntermediateMaterial& p_material, const py::list& p_graphics_pipeline_ids)
+py::dict material_to_python(const IntermediateMaterial& p_material,
+    const py::list& p_graphics_pipeline_ids,
+    const py::list& p_masked_graphics_pipeline_ids)
 {
     py::dict result;
     result["id"] = p_material.id;
     result["type"] = "material";
-    result["graphics_pipeline_ids"] = pipeline_ids_from(p_graphics_pipeline_ids);
+    const py::list& graphics_pipeline_ids = p_material.masked && p_masked_graphics_pipeline_ids.size() > 0
+                                                ? p_masked_graphics_pipeline_ids
+                                                : p_graphics_pipeline_ids;
+    result["graphics_pipeline_ids"] = pipeline_ids_from(graphics_pipeline_ids);
 
     py::list textures;
     for (const IntermediateMaterialTexture& texture : p_material.textures)
@@ -709,6 +719,7 @@ py::list ModelCompiler::compile_materials(
     const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
     const py::list& p_graphics_pipeline_ids,
+    const py::list& p_masked_graphics_pipeline_ids,
     const std::string& p_texture_output_dir) const
 {
     const IntermediateScene scene = import_scene(
@@ -717,7 +728,7 @@ py::list ModelCompiler::compile_materials(
     py::list result;
     for (const IntermediateMaterial& material : scene.materials)
     {
-        result.append(material_to_python(material, p_graphics_pipeline_ids));
+        result.append(material_to_python(material, p_graphics_pipeline_ids, p_masked_graphics_pipeline_ids));
     }
     return result;
 }

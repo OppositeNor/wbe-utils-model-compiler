@@ -95,6 +95,7 @@ resource = {
 	"type": "model",
 	"file": "Cube/glTF/Cube.gltf",
 	"graphics_pipeline_ids": ["main_pipeline"],
+	"masked_graphics_pipeline_ids": ["masked_pipeline"],
 	"texture_output_dir": "textures",
 }
 
@@ -124,6 +125,7 @@ material_resources = compiler.compile_materials(
 	"type": "model",
 	"file": str,
 	"graphics_pipeline_ids": list[str],
+	"masked_graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
 	"geometry_output_dir": str,
 	"scale_vertex_pos": float,
@@ -139,6 +141,8 @@ material_resources = compiler.compile_materials(
 	},
 }
 ```
+
+Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
 All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 

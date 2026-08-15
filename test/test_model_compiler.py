@@ -13,7 +13,9 @@
 # limitations under the License.
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import shutil
 import struct
 
 import pytest
@@ -34,6 +36,16 @@ def _cube_resource() -> dict[str, object]:
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
     }
+
+
+def _make_masked_cube(tmp_path: Path) -> Path:
+    source_dir = tmp_path / "Cube"
+    shutil.copytree(TEST_MODEL_DIR / "Cube", source_dir)
+    source_path = source_dir / "glTF" / "Cube.gltf"
+    source_data = json.loads(source_path.read_text(encoding="utf-8"))
+    source_data["materials"][0]["alphaMode"] = "MASK"
+    source_path.write_text(json.dumps(source_data), encoding="utf-8")
+    return source_path
 
 
 def _section_data(geometry_path: Path, submesh: dict[str, object], slot: str) -> bytes:
@@ -181,7 +193,7 @@ def test_mesh_compilation_rejects_reused_axis(tmp_path: Path, space_key: str) ->
 
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     compiler = WBEUtilsModelCompiler()
-    resource = _cube_resource()
+    resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
 
     materials = compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
@@ -205,3 +217,22 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
         assert not Path(texture["path"]).is_absolute()
         assert texture["color_space"] in {"srgb", "rgb"}
         assert texture["channel_count"] in {3, 4}
+
+
+def test_masked_material_uses_masked_graphics_pipeline(tmp_path: Path) -> None:
+    _make_masked_cube(tmp_path)
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
+
+    materials = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+
+    assert materials[0]["graphics_pipeline_ids"] == ["masked_pipeline"]
+
+
+def test_masked_material_falls_back_to_graphics_pipeline(tmp_path: Path) -> None:
+    _make_masked_cube(tmp_path)
+    compiler = WBEUtilsModelCompiler()
+
+    materials = compiler.compile_materials(_cube_resource(), tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+
+    assert materials[0]["graphics_pipeline_ids"] == ["main_pipeline"]
