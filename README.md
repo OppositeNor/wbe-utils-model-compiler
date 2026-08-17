@@ -25,13 +25,13 @@ The native layer returns Python-compatible objects directly through pybind11. It
 └── wbe_utils_model_compiler/
 ```
 
-Assimp is expected to exist beside this repository:
+Dependencies are expected to exist beside this repository:
 
 ```text
-../assimp/
+..
 ```
 
-The path can be overridden with `WBE_ASSIMP_ROOT` or `--assimp-root`.
+The path can be overridden with `WBE_DEPENDENCIES_ROOT` or `--dependencies-root`.
 
 ## Requirements
 
@@ -54,16 +54,16 @@ python build.py test
 python build.py clean
 ```
 
-Use a custom Assimp source path when needed:
+Use a custom dependencies directory when needed:
 
 ```sh
-python build.py configure --assimp-root /path/to/assimp
+python build.py configure --dependencies-root /path/to/dependencies
 ```
 
 The same path can be supplied with an environment variable:
 
 ```sh
-WBE_ASSIMP_ROOT=/path/to/assimp python build.py build
+WBE_DEPENDENCIES_ROOT=/path/to/dependencies python build.py build
 ```
 
 ## Install
@@ -115,7 +115,7 @@ material_resources = compiler.compile_materials(
 ```
 
 `res_dir` is used to resolve relative resource paths first. If the resource path is not found there, it is resolved relative to `manifest_path.parent`.
-`res_output_dir` is used as the root for emitted geometry sidecar binaries.
+`res_output_dir` is the root for emitted geometry sidecar binaries, copied material textures, and generated texture artifacts.
 
 ## Manifest Resource Input
 
@@ -145,6 +145,8 @@ material_resources = compiler.compile_materials(
 Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
 All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
+
+When `texture_output_dir` is provided, regular source textures are copied under `res_output_dir / texture_output_dir`, and generated textures such as repacked roughness-metallic-ambient-occlusion images are emitted there as well.
 
 ## Mesh Resource Output
 
@@ -203,6 +205,7 @@ B -> ambient occlusion
 ```
 
 Generated resource paths are relative; absolute source paths are not embedded in returned texture resources.
+For emitted material textures, `texture.file` is relative to `res_output_dir`, typically under `texture_output_dir` when that field is configured.
 
 ## Tests
 
@@ -212,4 +215,4 @@ Run the full test path through the build wrapper:
 python build.py test
 ```
 
-The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh output fields, geometry sidecar files and sections, material references, texture bindings, and relative texture paths.
+The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh output fields, geometry sidecar files and sections, material references, copied/generated texture bindings, and relative texture paths.

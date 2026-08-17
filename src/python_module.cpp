@@ -75,17 +75,20 @@ PYBIND11_MODULE(_native, p_module)
            const std::string& p_resource_id,
            const py::list& p_graphics_pipeline_ids,
            const py::list& p_masked_graphics_pipeline_ids,
-           const std::string& p_texture_output_dir) -> py::list {
+           const std::string& p_texture_output_dir,
+           const std::string& p_texture_output_root) -> py::list {
             const wbe::model_compiler::ModelCompiler compiler;
             return compiler.compile_materials(std::filesystem::path(p_source_path),
                 p_resource_id,
                 p_graphics_pipeline_ids,
                 p_masked_graphics_pipeline_ids,
-                p_texture_output_dir);
+                p_texture_output_dir,
+                std::filesystem::path(p_texture_output_root));
         },
         py::arg("source_path"),
         py::arg("resource_id"),
         py::arg("graphics_pipeline_ids"),
         py::arg("masked_graphics_pipeline_ids"),
-        py::arg("texture_output_dir"));
+        py::arg("texture_output_dir"),
+        py::arg("texture_output_root") = "");
 }

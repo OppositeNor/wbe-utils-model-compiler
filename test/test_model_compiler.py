@@ -194,7 +194,6 @@ def test_mesh_compilation_rejects_reused_axis(tmp_path: Path, space_key: str) ->
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     compiler = WBEUtilsModelCompiler()
     resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
-
     materials = compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
     assert isinstance(materials, list)
@@ -212,9 +211,8 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     for texture_binding in material["textures"]:
         texture = texture_binding["texture"]
         assert texture["type"] == "image"
+        assert "file" in texture
         assert not Path(texture["file"]).is_absolute()
-        assert "path" in texture
-        assert not Path(texture["path"]).is_absolute()
         assert texture["color_space"] in {"srgb", "rgb"}
         assert texture["channel_count"] in {3, 4}
 

@@ -67,7 +67,8 @@ public:
         const std::string& p_resource_id,
         const pybind11::list& p_graphics_pipeline_ids,
         const pybind11::list& p_masked_graphics_pipeline_ids,
-        const std::string& p_texture_output_dir) const;
+        const std::string& p_texture_output_dir,
+        const std::filesystem::path& p_texture_output_root) const;
 };
 }
 

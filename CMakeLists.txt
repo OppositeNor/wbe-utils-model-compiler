@@ -35,9 +35,9 @@ endif()
 set(pybind11_DIR "${WBE_PYBIND11_CMAKE_DIR}" CACHE PATH "pybind11 CMake package directory")
 find_package(pybind11 CONFIG REQUIRED)
 
-set(WBE_ASSIMP_ROOT "${CMAKE_CURRENT_LIST_DIR}/../assimp" CACHE PATH "Path to Assimp source directory")
-if(NOT EXISTS "${WBE_ASSIMP_ROOT}/CMakeLists.txt")
-    message(FATAL_ERROR "Assimp source was not found at '${WBE_ASSIMP_ROOT}'. Set WBE_ASSIMP_ROOT or pass -DWBE_ASSIMP_ROOT=...")
+set(WBE_DEPENDENCIES_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH "Path to dependencies directory")
+if(NOT EXISTS "${WBE_DEPENDENCIES_ROOT}/assimp/CMakeLists.txt")
+    message(FATAL_ERROR "Assimp source was not found at '${WBE_DEPENDENCIES_ROOT}/assimp'. Set WBE_DEPENDENCIES_ROOT or pass -DWBE_DEPENDENCIES_ROOT=...")
 endif()
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
@@ -46,7 +46,7 @@ set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)
 set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
 set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
-add_subdirectory("${WBE_ASSIMP_ROOT}" "${CMAKE_BINARY_DIR}/assimp")
+add_subdirectory("${WBE_DEPENDENCIES_ROOT}/assimp" "${CMAKE_BINARY_DIR}/assimp")
 if(TARGET assimp::assimp)
     set(WBE_ASSIMP_TARGET assimp::assimp)
 else()
@@ -62,7 +62,7 @@ pybind11_add_module(_native
     src/python_module.cpp
 )
 
-target_include_directories(_native PRIVATE include)
+target_include_directories(_native PRIVATE include "${WBE_DEPENDENCIES_ROOT}/stb")
 target_link_libraries(_native PRIVATE ${WBE_ASSIMP_TARGET})
 
 set_target_properties(_native PROPERTIES

@@ -33,6 +33,11 @@
 #include <assimp/scene.h>
 #include <pybind11/pybind11.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
 namespace py = pybind11;
 
 namespace wbe::model_compiler
@@ -282,13 +287,47 @@ std::string texture_output_path(const aiString& p_texture_path, const std::strin
     return (output_dir / source_path.filename()).generic_string();
 }
 
+void stage_texture_file(const std::filesystem::path& p_source_directory,
+    const aiString& p_texture_path,
+    const std::string& p_texture_output_dir,
+    const std::filesystem::path& p_texture_output_root,
+    IntermediateMaterialTexture& p_texture)
+{
+    if (p_texture_output_root.empty() || p_texture_output_dir.empty() || p_texture_path.C_Str()[0] == '*')
+    {
+        return;
+    }
+
+    const std::filesystem::path source_texture_path(p_texture_path.C_Str());
+    const std::filesystem::path resolved_source_path =
+        source_texture_path.is_absolute() ? source_texture_path : p_source_directory / source_texture_path;
+    const std::filesystem::path relative_output_path = texture_output_path(p_texture_path, p_texture_output_dir);
+    const std::filesystem::path output_path = p_texture_output_root / relative_output_path;
+
+    std::filesystem::create_directories(output_path.parent_path());
+
+    std::error_code error_code;
+    std::filesystem::copy_file(
+        resolved_source_path, output_path, std::filesystem::copy_options::overwrite_existing, error_code);
+    if (error_code)
+    {
+        throw std::runtime_error(
+            "Failed to copy material texture: " + resolved_source_path.generic_string() + " -> " + output_path.generic_string());
+    }
+
+    p_texture.file = std::filesystem::absolute(output_path).generic_string();
+    p_texture.path = relative_output_path.generic_string();
+}
+
 bool add_texture(
+    const std::filesystem::path& p_source_directory,
     const aiMaterial* p_material,
     aiTextureType p_texture_type,
     const std::string& p_texture_key,
     const std::string& p_color_space,
     int p_channel_count,
     const std::string& p_texture_output_dir,
+    const std::filesystem::path& p_texture_output_root,
     std::vector<IntermediateMaterialTexture>& p_textures)
 {
     aiString texture_path;
@@ -304,6 +343,140 @@ bool add_texture(
         .color_space = p_color_space,
         .channel_count = p_channel_count,
     });
+    stage_texture_file(p_source_directory, texture_path, p_texture_output_dir, p_texture_output_root, p_textures.back());
+    return true;
+}
+
+bool get_texture_path(const aiMaterial* p_material, aiTextureType p_texture_type, std::filesystem::path& p_path)
+{
+    aiString texture_path;
+    if (p_material->GetTexture(p_texture_type, 0, &texture_path) != AI_SUCCESS || texture_path.length == 0 ||
+        texture_path.C_Str()[0] == '*')
+    {
+        return false;
+    }
+    p_path = std::filesystem::path(texture_path.C_Str());
+    return true;
+}
+
+void repack_rma_texture(const std::filesystem::path& p_source_directory,
+    const std::filesystem::path& p_metalness_path,
+    const std::filesystem::path& p_roughness_path,
+    const std::filesystem::path& p_occlusion_path,
+    const std::string& p_texture_output_dir,
+    const std::filesystem::path& p_texture_output_root,
+    IntermediateMaterialTexture& p_texture)
+{
+    const std::filesystem::path source_path =
+        p_source_directory / (p_metalness_path.empty() ? p_roughness_path : p_metalness_path);
+    int source_width = 0;
+    int source_height = 0;
+    int source_channels = 0;
+    unsigned char* source_pixels =
+        stbi_load(source_path.string().c_str(), &source_width, &source_height, &source_channels, 4);
+    if (source_pixels == nullptr)
+    {
+        throw std::runtime_error(
+            "Failed to decode material texture: " + source_path.string() + ". " + stbi_failure_reason());
+    }
+
+    const std::filesystem::path roughness_source_path = p_source_directory / p_roughness_path;
+    const std::filesystem::path occlusion_source_path = p_source_directory / p_occlusion_path;
+    int roughness_width = 0;
+    int roughness_height = 0;
+    int roughness_channels = 0;
+    unsigned char* roughness_pixels = nullptr;
+    if (!p_roughness_path.empty() && p_roughness_path != (p_metalness_path.empty() ? p_roughness_path : p_metalness_path))
+    {
+        roughness_pixels = stbi_load(
+            roughness_source_path.string().c_str(), &roughness_width, &roughness_height, &roughness_channels, 4);
+    }
+    int occlusion_width = 0;
+    int occlusion_height = 0;
+    int occlusion_channels = 0;
+    unsigned char* occlusion_pixels = nullptr;
+    if (!p_occlusion_path.empty())
+    {
+        occlusion_pixels = stbi_load(
+            occlusion_source_path.string().c_str(), &occlusion_width, &occlusion_height, &occlusion_channels, 4);
+    }
+    if ((roughness_pixels != nullptr && (roughness_width != source_width || roughness_height != source_height)) ||
+        (occlusion_pixels != nullptr && (occlusion_width != source_width || occlusion_height != source_height)))
+    {
+        stbi_image_free(source_pixels);
+        stbi_image_free(roughness_pixels);
+        stbi_image_free(occlusion_pixels);
+        throw std::runtime_error("Roughness, metallic, and occlusion textures must have matching dimensions.");
+    }
+
+    std::vector<unsigned char> rma_pixels(static_cast<size_t>(source_width) * static_cast<size_t>(source_height) * 3U);
+    for (int pixel_index = 0; pixel_index < source_width * source_height; ++pixel_index)
+    {
+        const unsigned char* source_pixel = source_pixels + pixel_index * 4;
+        rma_pixels[static_cast<size_t>(pixel_index) * 3U] = roughness_pixels != nullptr
+                                                                 ? roughness_pixels[pixel_index * 4]
+                                                                 : (!p_metalness_path.empty() ? source_pixel[1] : 255U);
+        rma_pixels[static_cast<size_t>(pixel_index) * 3U + 1U] = p_metalness_path.empty() ? 0U : source_pixel[2];
+        rma_pixels[static_cast<size_t>(pixel_index) * 3U + 2U] =
+            occlusion_pixels != nullptr ? occlusion_pixels[pixel_index * 4] : 255U;
+    }
+
+    const std::string output_name = source_path.stem().string() + "_rma.png";
+    const std::filesystem::path relative_output_path = std::filesystem::path(p_texture_output_dir) / output_name;
+    const std::filesystem::path output_path = p_texture_output_root / relative_output_path;
+    std::filesystem::create_directories(output_path.parent_path());
+    if (stbi_write_png(
+            output_path.string().c_str(), source_width, source_height, 3, rma_pixels.data(), source_width * 3) == 0)
+    {
+        stbi_image_free(source_pixels);
+        stbi_image_free(roughness_pixels);
+        stbi_image_free(occlusion_pixels);
+        throw std::runtime_error("Failed to write repacked RMA texture: " + output_path.string() + ".");
+    }
+
+    stbi_image_free(source_pixels);
+    stbi_image_free(roughness_pixels);
+    stbi_image_free(occlusion_pixels);
+    p_texture.file = std::filesystem::absolute(output_path).generic_string();
+    p_texture.path = relative_output_path.generic_string();
+}
+
+bool add_rma_texture(const aiMaterial* p_material,
+    const std::filesystem::path& p_source_directory,
+    const std::string& p_texture_output_dir,
+    const std::filesystem::path& p_texture_output_root,
+    std::vector<IntermediateMaterialTexture>& p_textures)
+{
+    std::filesystem::path metalness_path;
+    std::filesystem::path roughness_path;
+    std::filesystem::path occlusion_path;
+    const bool has_metalness = get_texture_path(p_material, aiTextureType_METALNESS, metalness_path);
+    const bool has_roughness = get_texture_path(p_material, aiTextureType_DIFFUSE_ROUGHNESS, roughness_path);
+    const bool has_occlusion = get_texture_path(p_material, aiTextureType_AMBIENT_OCCLUSION, occlusion_path);
+    if (!has_metalness && !has_roughness && !has_occlusion)
+    {
+        return false;
+    }
+
+    const std::filesystem::path source_texture_path =
+        has_metalness ? metalness_path : (has_roughness ? roughness_path : occlusion_path);
+    p_textures.push_back(IntermediateMaterialTexture{
+        .texture_key = "roughness_metallic_ao",
+        .file = source_texture_path.generic_string(),
+        .path = (std::filesystem::path(p_texture_output_dir) / source_texture_path.filename()).generic_string(),
+        .color_space = "rgb",
+        .channel_count = 3,
+    });
+    if (!p_texture_output_root.empty())
+    {
+        repack_rma_texture(p_source_directory,
+            metalness_path,
+            roughness_path,
+            occlusion_path,
+            p_texture_output_dir,
+            p_texture_output_root,
+            p_textures.back());
+    }
     return true;
 }
 
@@ -405,7 +578,9 @@ IntermediateMaterial import_material(
     const aiMaterial* p_material,
     const std::string& p_resource_id,
     unsigned int p_material_index,
-    const std::string& p_texture_output_dir)
+    const std::string& p_texture_output_dir,
+    const std::filesystem::path& p_source_directory,
+    const std::filesystem::path& p_texture_output_root)
 {
     IntermediateMaterial result;
     result.id = material_id_for(p_material, p_resource_id, p_material_index);
@@ -413,21 +588,21 @@ IntermediateMaterial import_material(
     result.masked =
         p_material->Get(AI_MATKEY_GLTF_ALPHAMODE, alpha_mode) == AI_SUCCESS && std::string(alpha_mode.C_Str()) == "MASK";
 
-    if (!add_texture(p_material, aiTextureType_BASE_COLOR, "albedo", "srgb", 4, p_texture_output_dir, result.textures))
+    if (!add_texture(
+            p_source_directory, p_material, aiTextureType_BASE_COLOR, "albedo", "srgb", 4, p_texture_output_dir, p_texture_output_root, result.textures))
     {
-        add_texture(p_material, aiTextureType_DIFFUSE, "albedo", "srgb", 4, p_texture_output_dir, result.textures);
+        add_texture(
+            p_source_directory, p_material, aiTextureType_DIFFUSE, "albedo", "srgb", 4, p_texture_output_dir, p_texture_output_root, result.textures);
     }
 
-    if (!add_texture(p_material, aiTextureType_NORMALS, "normal", "rgb", 3, p_texture_output_dir, result.textures))
+    if (!add_texture(
+            p_source_directory, p_material, aiTextureType_NORMALS, "normal", "rgb", 3, p_texture_output_dir, p_texture_output_root, result.textures))
     {
-        add_texture(p_material, aiTextureType_HEIGHT, "normal", "rgb", 3, p_texture_output_dir, result.textures);
+        add_texture(
+            p_source_directory, p_material, aiTextureType_HEIGHT, "normal", "rgb", 3, p_texture_output_dir, p_texture_output_root, result.textures);
     }
 
-    if (!add_texture(p_material, aiTextureType_METALNESS, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures) &&
-        !add_texture(p_material, aiTextureType_DIFFUSE_ROUGHNESS, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures))
-    {
-        add_texture(p_material, aiTextureType_AMBIENT_OCCLUSION, "roughness_metallic_ao", "rgb", 3, p_texture_output_dir, result.textures);
-    }
+    add_rma_texture(p_material, p_source_directory, p_texture_output_dir, p_texture_output_root, result.textures);
 
     return result;
 }
@@ -435,7 +610,8 @@ IntermediateMaterial import_material(
 IntermediateScene import_scene(const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
     const std::string& p_texture_output_dir,
-    const VertexTransform& p_transform)
+    const VertexTransform& p_transform,
+    const std::filesystem::path& p_texture_output_root)
 {
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(
@@ -452,7 +628,12 @@ IntermediateScene import_scene(const std::filesystem::path& p_source_path,
 
     for (unsigned int material_index = 0; material_index < scene->mNumMaterials; ++material_index)
     {
-        result.materials.push_back(import_material(scene->mMaterials[material_index], p_resource_id, material_index, p_texture_output_dir));
+        result.materials.push_back(import_material(scene->mMaterials[material_index],
+            p_resource_id,
+            material_index,
+            p_texture_output_dir,
+            p_source_path.parent_path(),
+            p_texture_output_root));
     }
 
     for (unsigned int mesh_index = 0; mesh_index < scene->mNumMeshes; ++mesh_index)
@@ -650,7 +831,6 @@ py::dict to_python(const IntermediateMaterialTexture& p_texture)
     py::dict texture;
     texture["type"] = "image";
     texture["file"] = p_texture.file;
-    texture["path"] = p_texture.path;
     texture["color_space"] = p_texture.color_space;
     texture["channel_count"] = p_texture.channel_count;
 
@@ -705,7 +885,7 @@ py::dict ModelCompiler::compile_mesh(
         p_target_up_direction,
         p_target_right_direction,
         p_target_front_direction);
-    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir, transform);
+    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir, transform, {});
 
     py::dict result;
     const std::string mesh_id = p_resource_id + ".mesh";
@@ -720,10 +900,15 @@ py::list ModelCompiler::compile_materials(
     const std::string& p_resource_id,
     const py::list& p_graphics_pipeline_ids,
     const py::list& p_masked_graphics_pipeline_ids,
-    const std::string& p_texture_output_dir) const
+    const std::string& p_texture_output_dir,
+    const std::filesystem::path& p_texture_output_root) const
 {
     const IntermediateScene scene = import_scene(
-        p_source_path, p_resource_id, p_texture_output_dir, make_vertex_transform(1.0F, "y", "x", "z", "y", "x", "z"));
+        p_source_path,
+        p_resource_id,
+        p_texture_output_dir,
+        make_vertex_transform(1.0F, "y", "x", "z", "y", "x", "z"),
+        p_texture_output_root);
 
     py::list result;
     for (const IntermediateMaterial& material : scene.materials)

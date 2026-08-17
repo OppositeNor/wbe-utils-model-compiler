@@ -20,10 +20,11 @@ import shutil
 import subprocess
 import sys
 
+from setup import DEFAULT_DEPENDENCIES_ROOT
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_BUILD_TYPE = "Debug"
-DEFAULT_ASSIMP_ROOT = ROOT_DIR.parent / "assimp"
 
 
 def _run(command: list[str], p_cwd: Path | None = None) -> None:
@@ -40,7 +41,7 @@ def _is_configured(p_build_dir: Path) -> bool:
     return (p_build_dir / "CMakeCache.txt").exists() and ((p_build_dir / "Makefile").exists() or (p_build_dir / "build.ninja").exists())
 
 
-def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
+def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_dependencies_root: Path = DEFAULT_DEPENDENCIES_ROOT) -> None:
     build_dir = _build_dir(p_build_type)
     build_dir.mkdir(parents=True, exist_ok=True)
     command = [
@@ -50,16 +51,16 @@ def configure(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFA
         "-B",
         str(build_dir),
         f"-DCMAKE_BUILD_TYPE={p_build_type}",
-        f"-DWBE_ASSIMP_ROOT={p_assimp_root.resolve()}",
+        f"-DWBE_DEPENDENCIES_ROOT={p_dependencies_root.resolve()}",
         "-G", "Ninja"
     ]
     _run(command)
 
 
-def build(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
+def build(p_build_type: str = DEFAULT_BUILD_TYPE, p_dependencies_root: Path = DEFAULT_DEPENDENCIES_ROOT) -> None:
     build_dir = _build_dir(p_build_type)
     if not _is_configured(build_dir):
-        configure(p_build_type, p_assimp_root)
+        configure(p_build_type, p_dependencies_root)
     command = ["cmake", "--build", str(build_dir)]
     cpu_count = os.cpu_count()
     if cpu_count is not None:
@@ -67,8 +68,8 @@ def build(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_
     _run(command)
 
 
-def test(p_build_type: str = DEFAULT_BUILD_TYPE, p_assimp_root: Path = DEFAULT_ASSIMP_ROOT) -> None:
-    build(p_build_type, p_assimp_root)
+def test(p_build_type: str = DEFAULT_BUILD_TYPE, p_dependencies_root: Path = DEFAULT_DEPENDENCIES_ROOT) -> None:
+    build(p_build_type, p_dependencies_root)
     _run([sys.executable, "-m", "pytest", str(ROOT_DIR / "test")], ROOT_DIR)
 
 
@@ -94,10 +95,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("operation", choices=["configure", "build", "test", "clean"], help="Build operation to run.")
     parser.add_argument("--build-type", default=DEFAULT_BUILD_TYPE, help="CMake build type.")
     parser.add_argument(
-        "--assimp-root",
+        "--dependencies-root",
         type=Path,
-        default=Path(os.environ.get("WBE_ASSIMP_ROOT", DEFAULT_ASSIMP_ROOT)),
-        help="Path to the Assimp source directory.",
+        default=Path(os.environ.get("WBE_DEPENDENCIES_ROOT", DEFAULT_DEPENDENCIES_ROOT)),
+        help="Path to the dependencies directory.",
     )
     return parser.parse_args()
 
@@ -105,11 +106,11 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     if args.operation == "configure":
-        configure(args.build_type, args.assimp_root)
+        configure(args.build_type, args.dependencies_root)
     elif args.operation == "build":
-        build(args.build_type, args.assimp_root)
+        build(args.build_type, args.dependencies_root)
     elif args.operation == "test":
-        test(args.build_type, args.assimp_root)
+        test(args.build_type, args.dependencies_root)
     elif args.operation == "clean":
         clean()
 
