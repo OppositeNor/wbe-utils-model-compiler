@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import shutil
 import struct
+import zlib
 
 import pytest
 import wbe_utils_model_compiler
@@ -64,6 +65,92 @@ def _vec3_section(geometry_path: Path, submesh: dict[str, object], slot: str) ->
 
 def _index_section(geometry_path: Path, submesh: dict[str, object]) -> list[int]:
     return [value[0] for value in struct.iter_unpack("<I", _section_data(geometry_path, submesh, "index"))]
+
+
+def _paeth_predictor(p_left: int, p_up: int, p_upper_left: int) -> int:
+    estimate = p_left + p_up - p_upper_left
+    left_distance = abs(estimate - p_left)
+    up_distance = abs(estimate - p_up)
+    upper_left_distance = abs(estimate - p_upper_left)
+    if left_distance <= up_distance and left_distance <= upper_left_distance:
+        return p_left
+    if up_distance <= upper_left_distance:
+        return p_up
+    return p_upper_left
+
+
+def _read_rgb_png(p_path: Path) -> tuple[int, int, list[tuple[int, int, int]]]:
+    data = p_path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    offset = 8
+    width = 0
+    height = 0
+    compressed_data = bytearray()
+    while offset < len(data):
+        chunk_size = int.from_bytes(data[offset:offset + 4], "big")
+        chunk_type = data[offset + 4:offset + 8]
+        chunk_data = data[offset + 8:offset + 8 + chunk_size]
+        offset += 12 + chunk_size
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(">IIBBBBB", chunk_data)
+            assert (bit_depth, color_type, compression, filtering, interlace) == (8, 2, 0, 0, 0)
+        elif chunk_type == b"IDAT":
+            compressed_data.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+
+    row_size = width * 3
+    filtered_data = zlib.decompress(compressed_data)
+    previous_row = bytearray(row_size)
+    pixels: list[tuple[int, int, int]] = []
+    data_offset = 0
+    for _ in range(height):
+        filter_type = filtered_data[data_offset]
+        data_offset += 1
+        filtered_row = filtered_data[data_offset:data_offset + row_size]
+        data_offset += row_size
+        row = bytearray(row_size)
+        for index, value in enumerate(filtered_row):
+            left = row[index - 3] if index >= 3 else 0
+            up = previous_row[index]
+            upper_left = previous_row[index - 3] if index >= 3 else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = up
+            elif filter_type == 3:
+                predictor = (left + up) // 2
+            else:
+                assert filter_type == 4
+                predictor = _paeth_predictor(left, up, upper_left)
+            row[index] = (value + predictor) & 0xFF
+        pixels.extend(tuple(row[index:index + 3]) for index in range(0, row_size, 3))
+        previous_row = row
+    return width, height, pixels
+
+
+def _rma_texture_path(p_material: dict[str, object], p_output_dir: Path) -> Path:
+    textures = p_material["textures"]
+    assert isinstance(textures, list)
+    binding = next(texture for texture in textures if texture["texture_key"] == "roughness_metallic_ao")
+    return p_output_dir / binding["texture"]["file"]
+
+
+def _write_standalone_pbr_obj(p_directory: Path) -> Path:
+    p_directory.mkdir(parents=True)
+    (p_directory / "metallic.ppm").write_bytes(b"P6\n1 1\n255\n" + bytes((204, 17, 34)))
+    (p_directory / "roughness.ppm").write_bytes(b"P6\n1 1\n255\n" + bytes((51, 102, 153)))
+    (p_directory / "material.mtl").write_text(
+        "newmtl material\nKd 1 1 1\nmap_Pm metallic.ppm\nmap_Pr roughness.ppm\n", encoding="utf-8")
+    source_path = p_directory / "triangle.obj"
+    source_path.write_text(
+        "mtllib material.mtl\no triangle\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n"
+        "vn 0 0 1\nusemtl material\nf 1/1/1 2/2/1 3/3/1\n",
+        encoding="utf-8",
+    )
+    return source_path
 
 
 def test_package_imports() -> None:
@@ -215,6 +302,42 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
         assert not Path(texture["file"]).is_absolute()
         assert texture["color_space"] in {"srgb", "rgb"}
         assert texture["channel_count"] in {3, 4}
+
+
+def test_gltf_material_uses_packed_channels_and_occlusion_red_channel(tmp_path: Path) -> None:
+    source_path = _make_masked_cube(tmp_path)
+    source_data = json.loads(source_path.read_text(encoding="utf-8"))
+    source_data["materials"][0]["occlusionTexture"] = {"index": 1}
+    source_path.write_text(json.dumps(source_data), encoding="utf-8")
+    compiler = WBEUtilsModelCompiler()
+    output_dir = tmp_path / "output"
+    resource = {**_cube_resource(), "file": "Cube/glTF/Cube.gltf"}
+
+    materials = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+
+    width, height, pixels = _read_rgb_png(_rma_texture_path(materials[0], output_dir))
+    assert (width, height) == (512, 512)
+    assert set(pixels) == {(20, 0, 0)}
+
+
+def test_standalone_material_maps_use_red_channels(tmp_path: Path) -> None:
+    source_path = _write_standalone_pbr_obj(tmp_path / "model")
+    compiler = WBEUtilsModelCompiler()
+    output_dir = tmp_path / "output"
+    resource = {
+        "id": "standalone",
+        "type": "model",
+        "file": source_path.as_posix(),
+        "graphics_pipeline_ids": ["main_pipeline"],
+        "texture_output_dir": "textures",
+    }
+
+    materials = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+    material = next(material for material in materials if material["textures"])
+
+    width, height, pixels = _read_rgb_png(_rma_texture_path(material, output_dir))
+    assert (width, height) == (1, 1)
+    assert pixels == [(51, 204, 255)]
 
 
 def test_masked_material_uses_masked_graphics_pipeline(tmp_path: Path) -> None:
