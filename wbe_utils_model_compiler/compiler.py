@@ -26,6 +26,17 @@ class WBEUtilsModelCompiler:
         # Advertise the only manifest resource type this compiler can handle.
         return ["model"]
 
+    def compile(
+        self,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+    ) -> list[ManifestResource]:
+        mesh_resource = self.compile_mesh(resource, manifest_path, res_dir, res_output_dir)
+        material_resources = self.compile_materials(resource, manifest_path, res_dir, res_output_dir)
+        return [mesh_resource, *material_resources]
+
     def compile_mesh(
         self,
         resource: ManifestResource,
@@ -88,24 +99,35 @@ class WBEUtilsModelCompiler:
         material_resources = _native.compile_materials(
             str(source_path), resource_id, graphics_pipeline_ids, masked_graphics_pipeline_ids, texture_output_dir, str(res_output_dir)
         )
-        # Rewrite texture file fields after native compilation so manifests stay consistent.
-        self._normalize_material_texture_files(material_resources, source_path, res_dir, res_output_dir)
+        # Convert the native texture payload into the runtime material resource contract.
+        self._normalize_material_textures(material_resources, source_path, res_output_dir)
         return material_resources
 
-    def _normalize_material_texture_files(self, material_resources: list[ManifestResource], source_path: Path,
-                                          res_dir: Path, res_output_dir: Path) -> None:
+    def _normalize_material_textures(
+        self,
+        material_resources: list[ManifestResource],
+        source_path: Path,
+        res_output_dir: Path,
+    ) -> None:
         # Interpret relative texture references from the model source directory.
-        # resource_root = res_dir.resolve()
         source_dir = source_path.parent
         for material_resource in material_resources:
             textures = material_resource.get("textures", [])
             if not isinstance(textures, list):
                 # Skip malformed material payloads from native code.
                 continue
+            used_texture_roles: set[str] = set()
             for texture_binding in textures:
                 if not isinstance(texture_binding, dict):
                     # Ignore unexpected texture entries instead of crashing normalization.
                     continue
+                texture_role = texture_binding.pop("texture_key", None)
+                if not isinstance(texture_role, str) or not texture_role:
+                    raise RuntimeError("Model compiler produced an empty material texture role.")
+                if texture_role in used_texture_roles:
+                    raise RuntimeError(f"Model compiler produced duplicate material texture role '{texture_role}'.")
+                used_texture_roles.add(texture_role)
+                texture_binding["texture_role"] = texture_role
                 texture = texture_binding.get("texture")
                 if not isinstance(texture, dict):
                     # Only normalize concrete texture resource objects.
@@ -117,7 +139,9 @@ class WBEUtilsModelCompiler:
                 texture_file = Path(raw_file)
                 # Normalize to a concrete filesystem path before storing a manifest path.
                 resolved_file = texture_file if texture_file.is_absolute() else source_dir / texture_file
-                texture["file"] = resolved_file.resolve().relative_to(res_output_dir).as_posix()
+                texture["path"] = resolved_file.resolve().relative_to(res_output_dir.resolve()).as_posix()
+                texture["flip_v"] = True
+                del texture["file"]
 
     def _resolve_geometry_output(
         self,

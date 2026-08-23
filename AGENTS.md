@@ -158,6 +158,13 @@ Run tests with `python build.py test`.
 - Assimp tangent-space generation is enabled. Preserve tangent and bitangent export when changing import flags or intermediate vertex fields.
 - `geometry_output_dir` is source-only and resource-root-relative. Do not leak it into runtime resource dictionaries.
 
+## Material Output
+
+- `compile` returns the mesh resource first, followed by its material resources.
+- `compile_materials` emits final runtime material dictionaries. Texture bindings use `texture_role`; inline images use `path` and
+  set `flip_v` to `True`.
+- Keep material texture normalization in this package. Callers such as the engine ACP adapter must not reshape compiler output.
+
 ## Reflection / Codegen
 
 - All C++ header code are scanned by `build_script/reflection/metaparser.py`.

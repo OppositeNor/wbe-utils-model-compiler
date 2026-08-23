@@ -134,8 +134,8 @@ def _read_rgb_png(p_path: Path) -> tuple[int, int, list[tuple[int, int, int]]]:
 def _rma_texture_path(p_material: dict[str, object], p_output_dir: Path) -> Path:
     textures = p_material["textures"]
     assert isinstance(textures, list)
-    binding = next(texture for texture in textures if texture["texture_key"] == "rma")
-    return p_output_dir / binding["texture"]["file"]
+    binding = next(texture for texture in textures if texture["texture_role"] == "rma")
+    return p_output_dir / binding["texture"]["path"]
 
 
 def _write_standalone_pbr_obj(p_directory: Path) -> Path:
@@ -199,6 +199,15 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert sections["position"]["size"] % (3 * 4) == 0
     assert sections["uv"]["size"] % (2 * 4) == 0
     assert sections["index"]["size"] % (3 * 4) == 0
+
+
+def test_compiler_returns_mesh_before_materials(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler()
+
+    compiled = compiler.compile(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+    assert compiled[0]["type"] == "mesh"
+    assert all(resource["type"] == "material" for resource in compiled[1:])
 
 
 def test_mesh_compilation_scales_positions_and_converts_between_coordinate_spaces(tmp_path: Path) -> None:
@@ -292,16 +301,44 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     assert isinstance(material["textures"], list)
     assert material["textures"]
 
-    texture_keys = {texture["texture_key"] for texture in material["textures"]}
-    assert "albedo" in texture_keys
-    assert "rma" in texture_keys
+    texture_roles = {texture["texture_role"] for texture in material["textures"]}
+    assert "albedo" in texture_roles
+    assert "rma" in texture_roles
     for texture_binding in material["textures"]:
+        assert "texture_key" not in texture_binding
         texture = texture_binding["texture"]
         assert texture["type"] == "image"
-        assert "file" in texture
-        assert not Path(texture["file"]).is_absolute()
+        assert "file" not in texture
+        assert not Path(texture["path"]).is_absolute()
+        assert texture["flip_v"] is True
         assert texture["color_space"] in {"srgb", "rgb"}
         assert texture["channel_count"] in {3, 4}
+
+
+def test_materials_reject_duplicate_texture_roles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    texture_path = output_dir / "duplicate.png"
+    texture_path.touch()
+
+    def compile_duplicate_materials(*p_args: object) -> list[dict[str, object]]:
+        del p_args
+        texture = {"type": "image", "file": texture_path.as_posix(), "color_space": "srgb", "channel_count": 4}
+        return [{
+            "id": "duplicate.material",
+            "type": "material",
+            "graphics_pipeline_ids": ["main_pipeline"],
+            "textures": [
+                {"texture_key": "albedo", "texture": dict(texture)},
+                {"texture_key": "albedo", "texture": dict(texture)},
+            ],
+        }]
+
+    monkeypatch.setattr(_native, "compile_materials", compile_duplicate_materials)
+    compiler = WBEUtilsModelCompiler()
+
+    with pytest.raises(RuntimeError, match="duplicate material texture role 'albedo'"):
+        compiler.compile_materials(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, output_dir)
 
 
 def test_gltf_material_uses_packed_channels_and_occlusion_red_channel(tmp_path: Path) -> None:

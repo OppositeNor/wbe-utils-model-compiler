@@ -99,6 +99,13 @@ resource = {
 	"texture_output_dir": "textures",
 }
 
+resources = compiler.compile(
+	resource=resource,
+	manifest_path=Path("test-model/manifest.json"),
+	res_dir=Path("test-model"),
+	res_output_dir=Path("build/resources"),
+)
+
 mesh_resource = compiler.compile_mesh(
 	resource=resource,
 	manifest_path=Path("test-model/manifest.json"),
@@ -113,6 +120,9 @@ material_resources = compiler.compile_materials(
 	res_output_dir=Path("build/resources"),
 )
 ```
+
+`compile` returns the mesh resource first, followed by its material resources. The individual `compile_mesh` and
+`compile_materials` methods remain available when only one output category is needed.
 
 `res_dir` is used to resolve relative resource paths first. If the resource path is not found there, it is resolved relative to `manifest_path.parent`.
 `res_output_dir` is the root for emitted geometry sidecar binaries, copied material textures, and generated texture artifacts.
@@ -184,12 +194,13 @@ Geometry sidecar binaries contain raw little-endian `float32` vertex attribute v
 	"graphics_pipeline_ids": list[str],
 	"textures": [
 		{
-			"texture_key": str,
+			"texture_role": str,
 			"texture": {
 				"type": "image",
-				"file": str,
+				"path": str,
 				"color_space": str,
 				"channel_count": int,
+				"flip_v": True,
 			},
 		}
 	],
@@ -205,7 +216,8 @@ B -> ambient occlusion
 ```
 
 Generated resource paths are relative; absolute source paths are not embedded in returned texture resources.
-For emitted material textures, `texture.file` is relative to `res_output_dir`, typically under `texture_output_dir` when that field is configured.
+For emitted material textures, `texture.path` is relative to `res_output_dir`, typically under `texture_output_dir` when that field is configured.
+Assimp imports UV coordinates with a bottom-left origin, so emitted textures set `flip_v` to `True` for the engine image loader.
 
 ## Tests
 
