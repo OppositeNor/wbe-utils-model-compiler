@@ -196,7 +196,7 @@ Geometry sidecar binaries contain raw little-endian `float32` vertex attribute v
 }
 ```
 
-For PBR assets, roughness, metallic, and ambient occlusion are represented by one `roughness_metallic_ao` texture binding. The expected channel layout is:
+For PBR assets, roughness, metallic, and ambient occlusion are represented by one `rma` texture binding. The expected channel layout is:
 
 ```text
 R -> roughness

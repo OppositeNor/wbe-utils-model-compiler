@@ -534,7 +534,7 @@ bool add_rma_texture(const aiMaterial* p_material,
         source_texture_path = has_metalness ? metalness_path : (has_roughness ? roughness_path : occlusion_path);
     }
     p_textures.push_back(IntermediateMaterialTexture{
-        .texture_key = "roughness_metallic_ao",
+        .texture_key = "rma",
         .file = source_texture_path.generic_string(),
         .path = (std::filesystem::path(p_texture_output_dir) / source_texture_path.filename()).generic_string(),
         .color_space = "rgb",

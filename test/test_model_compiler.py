@@ -134,7 +134,7 @@ def _read_rgb_png(p_path: Path) -> tuple[int, int, list[tuple[int, int, int]]]:
 def _rma_texture_path(p_material: dict[str, object], p_output_dir: Path) -> Path:
     textures = p_material["textures"]
     assert isinstance(textures, list)
-    binding = next(texture for texture in textures if texture["texture_key"] == "roughness_metallic_ao")
+    binding = next(texture for texture in textures if texture["texture_key"] == "rma")
     return p_output_dir / binding["texture"]["file"]
 
 
@@ -294,7 +294,7 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
 
     texture_keys = {texture["texture_key"] for texture in material["textures"]}
     assert "albedo" in texture_keys
-    assert "roughness_metallic_ao" in texture_keys
+    assert "rma" in texture_keys
     for texture_binding in material["textures"]:
         texture = texture_binding["texture"]
         assert texture["type"] == "image"
