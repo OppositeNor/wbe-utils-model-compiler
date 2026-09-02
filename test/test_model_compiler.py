@@ -34,6 +34,7 @@ def _cube_resource() -> dict[str, object]:
         "id": "cube",
         "type": "model",
         "file": "Cube/glTF/Cube.gltf",
+        "combine_nodes": True,
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
     }
@@ -45,6 +46,36 @@ def _make_masked_cube(tmp_path: Path) -> Path:
     source_path = source_dir / "glTF" / "Cube.gltf"
     source_data = json.loads(source_path.read_text(encoding="utf-8"))
     source_data["materials"][0]["alphaMode"] = "MASK"
+    source_path.write_text(json.dumps(source_data), encoding="utf-8")
+    return source_path
+
+
+def _make_hierarchical_cube(tmp_path: Path) -> Path:
+    source_dir = tmp_path / "Cube"
+    shutil.copytree(TEST_MODEL_DIR / "Cube", source_dir)
+    source_path = source_dir / "glTF" / "Cube.gltf"
+    source_data = json.loads(source_path.read_text(encoding="utf-8"))
+    source_data["nodes"] = [
+        {
+            "children": [1],
+            "name": "Parent",
+            "scale": [-2.0, 2.0, 2.0],
+            "translation": [1.0, 0.0, 0.0],
+        },
+        {
+            "mesh": 0,
+            "name": "Child",
+            "rotation": [0.0, 0.0, 0.7071067811865475, 0.7071067811865476],
+            "translation": [0.0, 3.0, 0.0],
+        },
+        {
+            "mesh": 0,
+            "name": "Instance",
+            "translation": [0.0, 0.0, 4.0],
+        },
+    ]
+    source_data["scenes"] = [{"nodes": [0, 2]}]
+    source_data["scene"] = 0
     source_path.write_text(json.dumps(source_data), encoding="utf-8")
     return source_path
 
@@ -246,6 +277,76 @@ def test_mesh_compilation_scales_positions_and_converts_between_coordinate_space
     for index in range(0, len(baseline_indices), 3):
         expected_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
     assert converted_indices == expected_indices
+
+
+def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler()
+    baseline_output_dir = tmp_path / "baseline"
+    combined_output_dir = tmp_path / "combined"
+    baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
+    source_path = _make_hierarchical_cube(tmp_path / "source")
+    resource = {**_cube_resource(), "file": source_path.as_posix()}
+
+    combined = compiler.compile_mesh(resource, source_path.parent / "manifest.json", source_path.parent, combined_output_dir)
+
+    assert len(combined["submeshes"]) == 2
+    assert combined["submeshes"][0]["id"] == "cube.submesh.Cube"
+    assert combined["submeshes"][1]["id"] == "cube.submesh.Cube.1"
+    baseline_positions = _vec3_section(
+        baseline_output_dir / baseline["submeshes"][0]["geometry_path"], baseline["submeshes"][0], "position")
+    child_positions = _vec3_section(
+        combined_output_dir / combined["submeshes"][0]["geometry_path"], combined["submeshes"][0], "position")
+    instance_positions = _vec3_section(
+        combined_output_dir / combined["submeshes"][1]["geometry_path"], combined["submeshes"][1], "position")
+    for baseline_position, child_position, instance_position in zip(
+            baseline_positions, child_positions, instance_positions, strict=True):
+        assert child_position == pytest.approx(
+            (1.0 + 2.0 * baseline_position[1], 6.0 + 2.0 * baseline_position[0], 2.0 * baseline_position[2]))
+        assert instance_position == pytest.approx(
+            (baseline_position[0], baseline_position[1], baseline_position[2] + 4.0))
+    for slot in ("normal", "tangent", "bitangent"):
+        baseline_vectors = _vec3_section(
+            baseline_output_dir / baseline["submeshes"][0]["geometry_path"], baseline["submeshes"][0], slot)
+        child_vectors = _vec3_section(
+            combined_output_dir / combined["submeshes"][0]["geometry_path"], combined["submeshes"][0], slot)
+        instance_vectors = _vec3_section(
+            combined_output_dir / combined["submeshes"][1]["geometry_path"], combined["submeshes"][1], slot)
+        for baseline_vector, child_vector, instance_vector in zip(
+                baseline_vectors, child_vectors, instance_vectors, strict=True):
+            assert child_vector == pytest.approx((baseline_vector[1], baseline_vector[0], baseline_vector[2]), abs=1.0E-6)
+            assert instance_vector == pytest.approx(baseline_vector)
+    baseline_indices = _index_section(
+        baseline_output_dir / baseline["submeshes"][0]["geometry_path"], baseline["submeshes"][0])
+    child_indices = _index_section(
+        combined_output_dir / combined["submeshes"][0]["geometry_path"], combined["submeshes"][0])
+    expected_child_indices: list[int] = []
+    for index in range(0, len(baseline_indices), 3):
+        expected_child_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
+    assert child_indices == expected_child_indices
+
+
+def test_mesh_compilation_reverses_winding_for_negative_position_scale(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler()
+    baseline_output_dir = tmp_path / "baseline"
+    scaled_output_dir = tmp_path / "scaled"
+    baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
+    resource = {**_cube_resource(), "scale_vertex_pos": -1.0}
+
+    scaled = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, scaled_output_dir)
+
+    baseline_submesh = baseline["submeshes"][0]
+    scaled_submesh = scaled["submeshes"][0]
+    for slot in ("normal", "tangent", "bitangent"):
+        baseline_vectors = _vec3_section(baseline_output_dir / baseline_submesh["geometry_path"], baseline_submesh, slot)
+        scaled_vectors = _vec3_section(scaled_output_dir / scaled_submesh["geometry_path"], scaled_submesh, slot)
+        for baseline_vector, scaled_vector in zip(baseline_vectors, scaled_vectors, strict=True):
+            assert scaled_vector == pytest.approx(tuple(-component for component in baseline_vector))
+    baseline_indices = _index_section(baseline_output_dir / baseline_submesh["geometry_path"], baseline_submesh)
+    scaled_indices = _index_section(scaled_output_dir / scaled_submesh["geometry_path"], scaled_submesh)
+    expected_indices: list[int] = []
+    for index in range(0, len(baseline_indices), 3):
+        expected_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
+    assert scaled_indices == expected_indices
 
 
 @pytest.mark.parametrize("space_key", ["source_space", "target_space"])

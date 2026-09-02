@@ -59,7 +59,8 @@ public:
         const std::string& p_source_front_direction = "z",
         const std::string& p_target_up_direction = "y",
         const std::string& p_target_right_direction = "x",
-        const std::string& p_target_front_direction = "z") const;
+        const std::string& p_target_front_direction = "z",
+        bool p_combine_nodes = false) const;
 
     /** Compile source materials into White Bird Engine material resource dictionaries. */
     pybind11::list compile_materials(

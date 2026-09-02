@@ -94,6 +94,7 @@ resource = {
 	"id": "cube",
 	"type": "model",
 	"file": "Cube/glTF/Cube.gltf",
+	"combine_nodes": True,
 	"graphics_pipeline_ids": ["main_pipeline"],
 	"masked_graphics_pipeline_ids": ["masked_pipeline"],
 	"texture_output_dir": "textures",
@@ -134,6 +135,7 @@ material_resources = compiler.compile_materials(
 	"id": str,
 	"type": "model",
 	"file": str,
+	"combine_nodes": bool,
 	"graphics_pipeline_ids": list[str],
 	"masked_graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
@@ -154,7 +156,7 @@ material_resources = compiler.compile_materials(
 
 Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
-All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
+All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. `combine_nodes` defaults to `false`; the `false` behavior is not implemented yet. When `true`, model nodes are flattened into one mesh and their hierarchical transforms are baked into each submesh's vertices. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
 When `texture_output_dir` is provided, regular source textures are copied under `res_output_dir / texture_output_dir`, and generated textures such as repacked roughness-metallic-ambient-occlusion images are emitted there as well.
 

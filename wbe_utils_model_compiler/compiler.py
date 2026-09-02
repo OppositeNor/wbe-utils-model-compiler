@@ -63,6 +63,7 @@ class WBEUtilsModelCompiler:
         # Forward the resolved paths and coordinate space configuration to native code.
         resource_id = str(resource.get("id", source_path.stem))
         graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
+        combine_nodes = bool(resource.get("combine_nodes", False))
         vertex_position_scale = float(resource.get("scale_vertex_pos", 1.0))
         source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
         target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
@@ -80,6 +81,7 @@ class WBEUtilsModelCompiler:
             target_up,
             target_right,
             target_front,
+            combine_nodes,
         )
 
     def compile_materials(

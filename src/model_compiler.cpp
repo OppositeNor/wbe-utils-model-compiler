@@ -185,7 +185,7 @@ VertexTransform make_vertex_transform(float p_position_scale,
     add_axis_mapping(result.basis, source.up, target.up);
     add_axis_mapping(result.basis, source.right, target.right);
     add_axis_mapping(result.basis, source.front, target.front);
-    result.reverse_winding = determinant(result.basis) < 0.0F;
+    result.reverse_winding = (determinant(result.basis) < 0.0F) != (p_position_scale < 0.0F);
     return result;
 }
 
@@ -197,6 +197,19 @@ std::array<float, 3> transform_vector(const std::array<float, 3>& p_value, const
         for (size_t input_axis = 0; input_axis < p_value.size(); ++input_axis)
         {
             result[output_axis] += p_transform.basis[output_axis][input_axis] * p_value[input_axis];
+        }
+    }
+    return result;
+}
+
+std::array<float, 3> transform_direction(const std::array<float, 3>& p_value, const VertexTransform& p_transform)
+{
+    std::array<float, 3> result = transform_vector(p_value, p_transform);
+    if (p_transform.position_scale < 0.0F)
+    {
+        for (float& component : result)
+        {
+            component = -component;
         }
     }
     return result;
@@ -579,15 +592,24 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
     const aiMesh* p_mesh,
     const std::string& p_resource_id,
     unsigned int p_mesh_index,
+    unsigned int p_mesh_instance_index,
+    const aiMatrix4x4& p_node_transform,
     const VertexTransform& p_transform)
 {
     IntermediateSubmesh result;
     result.id = submesh_id_for(p_mesh, p_resource_id, p_mesh_index);
+    if (p_mesh_instance_index > 0)
+    {
+        result.id += "." + std::to_string(p_mesh_instance_index);
+    }
     result.vertices.reserve(p_mesh->mNumVertices);
     result.indices.reserve(p_mesh->mNumFaces * 3);
     result.has_uv = p_mesh->HasTextureCoords(0);
     result.has_normal = p_mesh->HasNormals();
     result.has_tangent_space = p_mesh->HasTangentsAndBitangents();
+    aiMatrix3x3 normal_transform(p_node_transform);
+    normal_transform.Inverse().Transpose();
+    const aiMatrix3x3 direction_transform(p_node_transform);
 
     if (p_mesh->mMaterialIndex < p_scene->mNumMaterials)
     {
@@ -598,7 +620,7 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
     for (unsigned int vertex_index = 0; vertex_index < p_mesh->mNumVertices; ++vertex_index)
     {
         IntermediateVertex vertex;
-        const aiVector3D& position = p_mesh->mVertices[vertex_index];
+        const aiVector3D position = p_node_transform * p_mesh->mVertices[vertex_index];
         vertex.position = transform_vector({position.x, position.y, position.z}, p_transform);
         for (float& component : vertex.position)
         {
@@ -613,15 +635,15 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
 
         if (result.has_normal)
         {
-            const aiVector3D& normal = p_mesh->mNormals[vertex_index];
-            vertex.normal = transform_vector({normal.x, normal.y, normal.z}, p_transform);
+            const aiVector3D normal = (normal_transform * p_mesh->mNormals[vertex_index]).Normalize();
+            vertex.normal = transform_direction({normal.x, normal.y, normal.z}, p_transform);
         }
         if (result.has_tangent_space)
         {
-            const aiVector3D& tangent = p_mesh->mTangents[vertex_index];
-            const aiVector3D& bitangent = p_mesh->mBitangents[vertex_index];
-            vertex.tangent = transform_vector({tangent.x, tangent.y, tangent.z}, p_transform);
-            vertex.bitangent = transform_vector({bitangent.x, bitangent.y, bitangent.z}, p_transform);
+            const aiVector3D tangent = (direction_transform * p_mesh->mTangents[vertex_index]).Normalize();
+            const aiVector3D bitangent = (direction_transform * p_mesh->mBitangents[vertex_index]).Normalize();
+            vertex.tangent = transform_direction({tangent.x, tangent.y, tangent.z}, p_transform);
+            vertex.bitangent = transform_direction({bitangent.x, bitangent.y, bitangent.z}, p_transform);
         }
         result.vertices.push_back(vertex);
     }
@@ -637,7 +659,8 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
         }
     }
 
-    if (p_transform.reverse_winding)
+    const bool node_reverses_winding = aiMatrix3x3(p_node_transform).Determinant() < 0.0F;
+    if (p_transform.reverse_winding != node_reverses_winding)
     {
         for (size_t index = 0; index + 2 < result.indices.size(); index += 3)
         {
@@ -646,6 +669,39 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
     }
 
     return result;
+}
+
+void import_node(const aiScene* p_scene,
+    const aiNode* p_node,
+    const aiMatrix4x4& p_parent_transform,
+    const std::string& p_resource_id,
+    const VertexTransform& p_transform,
+    std::vector<unsigned int>& p_mesh_instance_counts,
+    IntermediateScene& p_result)
+{
+    const aiMatrix4x4 node_transform = p_parent_transform * p_node->mTransformation;
+    for (unsigned int node_mesh_index = 0; node_mesh_index < p_node->mNumMeshes; ++node_mesh_index)
+    {
+        const unsigned int mesh_index = p_node->mMeshes[node_mesh_index];
+        if (mesh_index >= p_scene->mNumMeshes)
+        {
+            throw std::runtime_error("Assimp model node references an out-of-range mesh index.");
+        }
+        const unsigned int mesh_instance_index = p_mesh_instance_counts[mesh_index]++;
+        p_result.submeshes.push_back(import_submesh(
+            p_scene, p_scene->mMeshes[mesh_index], p_resource_id, mesh_index, mesh_instance_index, node_transform, p_transform));
+    }
+
+    for (unsigned int child_index = 0; child_index < p_node->mNumChildren; ++child_index)
+    {
+        import_node(p_scene,
+            p_node->mChildren[child_index],
+            node_transform,
+            p_resource_id,
+            p_transform,
+            p_mesh_instance_counts,
+            p_result);
+    }
 }
 
 IntermediateMaterial import_material(
@@ -722,11 +778,12 @@ IntermediateScene import_scene(const std::filesystem::path& p_source_path,
             uses_gltf_texture_conventions));
     }
 
-    for (unsigned int mesh_index = 0; mesh_index < scene->mNumMeshes; ++mesh_index)
+    if (scene->mRootNode == nullptr)
     {
-        result.submeshes.push_back(
-            import_submesh(scene, scene->mMeshes[mesh_index], p_resource_id, mesh_index, p_transform));
+        throw std::runtime_error("Assimp loaded a model without a root node.");
     }
+    std::vector<unsigned int> mesh_instance_counts(scene->mNumMeshes, 0);
+    import_node(scene, scene->mRootNode, aiMatrix4x4(), p_resource_id, p_transform, mesh_instance_counts, result);
 
     return result;
 }
@@ -961,9 +1018,15 @@ py::dict ModelCompiler::compile_mesh(
     const std::string& p_source_front_direction,
     const std::string& p_target_up_direction,
     const std::string& p_target_right_direction,
-    const std::string& p_target_front_direction) const
+    const std::string& p_target_front_direction,
+    bool p_combine_nodes) const
 {
     (void)p_graphics_pipeline_ids;
+    if (!p_combine_nodes)
+    {
+        // TODO: Preserve model nodes as separate runtime scene resources once the scene representation is implemented.
+        throw std::runtime_error("Model compilation without combine_nodes is not implemented yet.");
+    }
     const VertexTransform transform = make_vertex_transform(p_vertex_position_scale,
         p_source_up_direction,
         p_source_right_direction,
