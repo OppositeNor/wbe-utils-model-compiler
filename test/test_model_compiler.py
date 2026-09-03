@@ -50,6 +50,14 @@ def _make_masked_cube(tmp_path: Path) -> Path:
     return source_path
 
 
+def _make_blend_cube(tmp_path: Path) -> Path:
+    source_path = _make_masked_cube(tmp_path)
+    source_data = json.loads(source_path.read_text(encoding="utf-8"))
+    source_data["materials"][0]["alphaMode"] = "BLEND"
+    source_path.write_text(json.dumps(source_data), encoding="utf-8")
+    return source_path
+
+
 def _make_hierarchical_cube(tmp_path: Path) -> Path:
     source_dir = tmp_path / "Cube"
     shutil.copytree(TEST_MODEL_DIR / "Cube", source_dir)
@@ -80,13 +88,44 @@ def _make_hierarchical_cube(tmp_path: Path) -> Path:
     return source_path
 
 
+def _binary_path(output_dir: Path, submesh: dict[str, object]) -> Path:
+    vertices = submesh["vertices"]
+    assert isinstance(vertices, dict)
+    binary = vertices["binary"]
+    assert isinstance(binary, dict)
+    binary_id = binary["binary_id"]
+    assert isinstance(binary_id, str)
+    return output_dir / f"{binary_id}.bin"
+
+
 def _section_data(geometry_path: Path, submesh: dict[str, object], slot: str) -> bytes:
-    sections = submesh["geometry_sections"]
-    assert isinstance(sections, list)
-    section = next(section for section in sections if section["slot"] == slot)
+    if slot == "index":
+        indices = submesh["indices"]
+        assert isinstance(indices, dict)
+        binary_view = indices["binary"]
+    else:
+        vertices = submesh["vertices"]
+        assert isinstance(vertices, dict)
+        binary_view = vertices["binary"]
+        attributes = vertices["attributes"]
+        assert isinstance(attributes, list)
+        attribute = next(attribute for attribute in attributes if attribute["role"] == slot)
+        stride = vertices["stride"]
+        assert isinstance(stride, int)
+        data = geometry_path.read_bytes()
+        start = binary_view["start"]
+        size = binary_view["size"]
+        offset = attribute["offset"]
+        attribute_type = attribute["type"]
+        component_count = 2 if attribute_type == "vec2" else 3
+        component_size = component_count * 4
+        result = bytearray()
+        for vertex_start in range(start, start + size, stride):
+            result.extend(data[vertex_start + offset:vertex_start + offset + component_size])
+        return bytes(result)
     data = geometry_path.read_bytes()
-    start = section["start"]
-    size = section["size"]
+    start = binary_view["start"]
+    size = binary_view["size"]
     return data[start:start + size]
 
 
@@ -207,29 +246,31 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert submesh["material_id"] == "cube.material.Cube"
     assert "vertices_data" not in submesh
     assert "indices_data" not in submesh
-    assert submesh["geometry_path"] == "cube.mesh.geometry.bin"
-    assert isinstance(submesh["geometry_path"], str)
-    assert isinstance(submesh["geometry_sections"], list)
-    geometry_path = tmp_path / submesh["geometry_path"]
+    assert "geometry_path" not in submesh
+    assert "geometry_sections" not in submesh
+    geometry_path = _binary_path(tmp_path, submesh)
     assert geometry_path.is_file()
 
-    sections = {section["slot"]: section for section in submesh["geometry_sections"]}
-    assert set(sections) == {"position", "normal", "tangent", "bitangent", "uv", "index"}
-    assert sections["position"]["type"] == "vec3"
-    assert sections["normal"]["type"] == "vec3"
-    assert sections["tangent"]["type"] == "vec3"
-    assert sections["bitangent"]["type"] == "vec3"
-    assert sections["uv"]["type"] == "vec2"
-    assert sections["index"]["type"] == "uint32"
+    vertices = submesh["vertices"]
+    indices = submesh["indices"]
+    assert isinstance(vertices, dict)
+    assert isinstance(indices, dict)
+    attributes = {attribute["role"]: attribute for attribute in vertices["attributes"]}
+    assert set(attributes) == {"position", "normal", "tangent", "bitangent", "uv"}
+    assert attributes["position"]["type"] == "vec3"
+    assert attributes["normal"]["type"] == "vec3"
+    assert attributes["tangent"]["type"] == "vec3"
+    assert attributes["bitangent"]["type"] == "vec3"
+    assert attributes["uv"]["type"] == "vec2"
+    assert vertices["binary"]["binary_id"] == "cube.mesh.geometry"
+    assert indices["binary"]["binary_id"] == "cube.mesh.geometry"
     file_size = geometry_path.stat().st_size
-    for section in sections.values():
-        assert isinstance(section["start"], int)
-        assert isinstance(section["size"], int)
-        assert section["size"] > 0
-        assert section["start"] + section["size"] <= file_size
-    assert sections["position"]["size"] % (3 * 4) == 0
-    assert sections["uv"]["size"] % (2 * 4) == 0
-    assert sections["index"]["size"] % (3 * 4) == 0
+    for binary_view in (vertices["binary"], indices["binary"]):
+        assert isinstance(binary_view["start"], int)
+        assert isinstance(binary_view["size"], int)
+        assert binary_view["start"] + binary_view["size"] <= file_size
+    assert vertices["binary"]["size"] % vertices["stride"] == 0
+    assert indices["binary"]["size"] % (3 * 4) == 0
 
 
 def test_compiler_returns_mesh_before_materials(tmp_path: Path) -> None:
@@ -238,7 +279,9 @@ def test_compiler_returns_mesh_before_materials(tmp_path: Path) -> None:
     compiled = compiler.compile(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
     assert compiled[0]["type"] == "mesh"
-    assert all(resource["type"] == "material" for resource in compiled[1:])
+    assert compiled[1]["type"] == "binary"
+    assert compiled[1]["id"] == "cube.mesh.geometry"
+    assert all(resource["type"] == "material" for resource in compiled[2:])
 
 
 def test_mesh_compilation_scales_positions_and_converts_between_coordinate_spaces(tmp_path: Path) -> None:
@@ -256,8 +299,8 @@ def test_mesh_compilation_scales_positions_and_converts_between_coordinate_space
 
     baseline_submesh = baseline["submeshes"][0]
     converted_submesh = converted["submeshes"][0]
-    baseline_path = baseline_output_dir / baseline_submesh["geometry_path"]
-    converted_path = converted_output_dir / converted_submesh["geometry_path"]
+    baseline_path = _binary_path(baseline_output_dir, baseline_submesh)
+    converted_path = _binary_path(converted_output_dir, converted_submesh)
 
     baseline_positions = _vec3_section(baseline_path, baseline_submesh, "position")
     converted_positions = _vec3_section(converted_path, converted_submesh, "position")
@@ -293,11 +336,11 @@ def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) 
     assert combined["submeshes"][0]["id"] == "cube.submesh.Cube"
     assert combined["submeshes"][1]["id"] == "cube.submesh.Cube.1"
     baseline_positions = _vec3_section(
-        baseline_output_dir / baseline["submeshes"][0]["geometry_path"], baseline["submeshes"][0], "position")
+        _binary_path(baseline_output_dir, baseline["submeshes"][0]), baseline["submeshes"][0], "position")
     child_positions = _vec3_section(
-        combined_output_dir / combined["submeshes"][0]["geometry_path"], combined["submeshes"][0], "position")
+        _binary_path(combined_output_dir, combined["submeshes"][0]), combined["submeshes"][0], "position")
     instance_positions = _vec3_section(
-        combined_output_dir / combined["submeshes"][1]["geometry_path"], combined["submeshes"][1], "position")
+        _binary_path(combined_output_dir, combined["submeshes"][1]), combined["submeshes"][1], "position")
     for baseline_position, child_position, instance_position in zip(
             baseline_positions, child_positions, instance_positions, strict=True):
         assert child_position == pytest.approx(
@@ -306,19 +349,19 @@ def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) 
             (baseline_position[0], baseline_position[1], baseline_position[2] + 4.0))
     for slot in ("normal", "tangent", "bitangent"):
         baseline_vectors = _vec3_section(
-            baseline_output_dir / baseline["submeshes"][0]["geometry_path"], baseline["submeshes"][0], slot)
+            _binary_path(baseline_output_dir, baseline["submeshes"][0]), baseline["submeshes"][0], slot)
         child_vectors = _vec3_section(
-            combined_output_dir / combined["submeshes"][0]["geometry_path"], combined["submeshes"][0], slot)
+            _binary_path(combined_output_dir, combined["submeshes"][0]), combined["submeshes"][0], slot)
         instance_vectors = _vec3_section(
-            combined_output_dir / combined["submeshes"][1]["geometry_path"], combined["submeshes"][1], slot)
+            _binary_path(combined_output_dir, combined["submeshes"][1]), combined["submeshes"][1], slot)
         for baseline_vector, child_vector, instance_vector in zip(
                 baseline_vectors, child_vectors, instance_vectors, strict=True):
             assert child_vector == pytest.approx((baseline_vector[1], baseline_vector[0], baseline_vector[2]), abs=1.0E-6)
             assert instance_vector == pytest.approx(baseline_vector)
     baseline_indices = _index_section(
-        baseline_output_dir / baseline["submeshes"][0]["geometry_path"], baseline["submeshes"][0])
+        _binary_path(baseline_output_dir, baseline["submeshes"][0]), baseline["submeshes"][0])
     child_indices = _index_section(
-        combined_output_dir / combined["submeshes"][0]["geometry_path"], combined["submeshes"][0])
+        _binary_path(combined_output_dir, combined["submeshes"][0]), combined["submeshes"][0])
     expected_child_indices: list[int] = []
     for index in range(0, len(baseline_indices), 3):
         expected_child_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
@@ -337,12 +380,12 @@ def test_mesh_compilation_reverses_winding_for_negative_position_scale(tmp_path:
     baseline_submesh = baseline["submeshes"][0]
     scaled_submesh = scaled["submeshes"][0]
     for slot in ("normal", "tangent", "bitangent"):
-        baseline_vectors = _vec3_section(baseline_output_dir / baseline_submesh["geometry_path"], baseline_submesh, slot)
-        scaled_vectors = _vec3_section(scaled_output_dir / scaled_submesh["geometry_path"], scaled_submesh, slot)
+        baseline_vectors = _vec3_section(_binary_path(baseline_output_dir, baseline_submesh), baseline_submesh, slot)
+        scaled_vectors = _vec3_section(_binary_path(scaled_output_dir, scaled_submesh), scaled_submesh, slot)
         for baseline_vector, scaled_vector in zip(baseline_vectors, scaled_vectors, strict=True):
             assert scaled_vector == pytest.approx(tuple(-component for component in baseline_vector))
-    baseline_indices = _index_section(baseline_output_dir / baseline_submesh["geometry_path"], baseline_submesh)
-    scaled_indices = _index_section(scaled_output_dir / scaled_submesh["geometry_path"], scaled_submesh)
+    baseline_indices = _index_section(_binary_path(baseline_output_dir, baseline_submesh), baseline_submesh)
+    scaled_indices = _index_section(_binary_path(scaled_output_dir, scaled_submesh), scaled_submesh)
     expected_indices: list[int] = []
     for index in range(0, len(baseline_indices), 3):
         expected_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
@@ -360,8 +403,8 @@ def test_mesh_compilation_defaults_front_to_positive_z(tmp_path: Path, space_key
 
     baseline_submesh = baseline["submeshes"][0]
     converted_submesh = converted["submeshes"][0]
-    baseline_path = baseline_output_dir / baseline_submesh["geometry_path"]
-    converted_path = converted_output_dir / converted_submesh["geometry_path"]
+    baseline_path = _binary_path(baseline_output_dir, baseline_submesh)
+    converted_path = _binary_path(converted_output_dir, converted_submesh)
     baseline_positions = _vec3_section(baseline_path, baseline_submesh, "position")
     converted_positions = _vec3_section(converted_path, converted_submesh, "position")
 
@@ -495,3 +538,214 @@ def test_masked_material_falls_back_to_graphics_pipeline(tmp_path: Path) -> None
     materials = compiler.compile_materials(_cube_resource(), tmp_path / "manifest.json", tmp_path, tmp_path / "output")
 
     assert materials[0]["graphics_pipeline_ids"] == ["main_pipeline"]
+
+
+def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
+
+    compiled = compiler.compile(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+    assert compiled[0] == {"id": "cube.geometry", "type": "binary", "path": "cube.geometry.bin"}
+    assert (tmp_path / "cube.geometry.bin").is_file()
+    opaque_set = compiled[1]
+    masked_set = compiled[2]
+    assert opaque_set["id"] == "cube.static_opaque_set"
+    assert opaque_set["type"] == "static_opaque_set"
+    assert masked_set["id"] == "cube.static_masked_set"
+    assert masked_set["type"] == "static_masked_set"
+    assert masked_set["submeshes"] == []
+    assert masked_set["instances"] == []
+    assert opaque_set["submeshes"]
+    assert opaque_set["instances"]
+    submesh = opaque_set["submeshes"][0]
+    assert submesh["material_id"] == "cube.material.Cube"
+    assert submesh["vertices"]["binary"]["binary_id"] == "cube.geometry"
+    assert submesh["indices"]["binary"]["binary_id"] == "cube.geometry"
+    assert submesh["first_instance"] == 0
+    assert submesh["instance_count"] == len(opaque_set["instances"])
+    assert len(opaque_set["instances"][0]["global_transform"]) == 16
+    assert all(resource["type"] == "material" for resource in compiled[3:])
+
+
+def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path) -> None:
+    _make_masked_cube(tmp_path)
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
+
+    compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+
+    opaque_set = compiled[1]
+    masked_set = compiled[2]
+    assert opaque_set["submeshes"] == []
+    assert opaque_set["instances"] == []
+    assert masked_set["submeshes"]
+    assert masked_set["instances"]
+    assert masked_set["submeshes"][0]["instance_count"] == len(masked_set["instances"])
+
+
+def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _make_blend_cube(tmp_path)
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
+
+    compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+
+    captured = capsys.readouterr()
+    assert captured.out.count("static_geometry omits BLEND primitives") == 1
+    opaque_set = compiled[1]
+    masked_set = compiled[2]
+    assert opaque_set["submeshes"] == []
+    assert opaque_set["instances"] == []
+    assert masked_set["submeshes"] == []
+    assert masked_set["instances"] == []
+
+
+def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) -> None:
+    source_path = _make_hierarchical_cube(tmp_path / "source")
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False, "file": source_path.as_posix()}
+
+    compiled = compiler.compile_static_geometry(resource, source_path.parent / "manifest.json", source_path.parent, tmp_path / "output")
+
+    opaque_set = compiled[1]
+    assert len(opaque_set["submeshes"]) == 1
+    assert len(opaque_set["instances"]) == 2
+    submesh = opaque_set["submeshes"][0]
+    assert submesh["first_instance"] == 0
+    assert submesh["instance_count"] == 2
+    second_transform = opaque_set["instances"][1]["global_transform"]
+    assert second_transform[12:15] == pytest.approx([0.0, 0.0, 4.0])
+
+
+def test_static_geometry_rejects_combine_nodes(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler()
+    resource = {**_cube_resource(), "source_type": "static_geometry"}
+
+    with pytest.raises(ValueError, match="does not support combine_nodes"):
+        compiler.compile_static_geometry(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+
+def _prepare_cached_cube_source(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
+    cache_dir = tmp_path / "cache"
+    source_root = tmp_path / "source"
+    shutil.copytree(TEST_MODEL_DIR / "Cube", source_root / "Cube")
+    resource = {**_cube_resource(), "file": "Cube/glTF/Cube.gltf"}
+    return cache_dir, source_root, resource
+
+
+def _install_compile_counters(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    compile_counts = {"mesh": 0, "static_geometry": 0, "materials": 0}
+    original_compile_mesh = _native.compile_mesh
+    original_compile_static_geometry = _native.compile_static_geometry
+    original_compile_materials = _native.compile_materials
+
+    def counted_compile_mesh(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        compile_counts["mesh"] += 1
+        return original_compile_mesh(*args, **kwargs)
+
+    def counted_compile_static_geometry(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        compile_counts["static_geometry"] += 1
+        return original_compile_static_geometry(*args, **kwargs)
+
+    def counted_compile_materials(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        compile_counts["materials"] += 1
+        return original_compile_materials(*args, **kwargs)
+
+    monkeypatch.setattr(_native, "compile_mesh", counted_compile_mesh)
+    monkeypatch.setattr(_native, "compile_static_geometry", counted_compile_static_geometry)
+    monkeypatch.setattr(_native, "compile_materials", counted_compile_materials)
+    return compile_counts
+
+
+def test_compile_uses_cache_when_inputs_are_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WBEUtilsModelCompiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    first_result = compiler.compile(resource, manifest_path, source_root, tmp_path / "output", cache_dir=cache_dir)
+    second_result = compiler.compile(resource, manifest_path, source_root, tmp_path / "output", cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 1, "static_geometry": 0, "materials": 1}
+    assert second_result == first_result
+    cache_files = list(cache_dir.glob("*.json"))
+    assert len(cache_files) == 1
+
+
+def test_compile_rebuilds_when_gltf_dependency_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WBEUtilsModelCompiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    cube_bin_path = source_root / "Cube" / "glTF" / "Cube.bin"
+    cube_bin_data = cube_bin_path.read_bytes()
+    cube_bin_path.write_bytes(cube_bin_data + b"\0")
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}
+
+
+def test_compile_rebuilds_when_source_file_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WBEUtilsModelCompiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    source_path = source_root / "Cube" / "glTF" / "Cube.gltf"
+    source_data = json.loads(source_path.read_text(encoding="utf-8"))
+    source_data["scene"] = source_data.get("scene", 0)
+    source_path.write_text(json.dumps(source_data, indent=2), encoding="utf-8")
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}
+
+
+def test_compile_rebuilds_when_resource_declaration_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WBEUtilsModelCompiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    modified_resource = {**resource, "texture_output_dir": "textures_cached"}
+    compiler.compile(modified_resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}
+
+
+def test_compile_rebuilds_when_generated_output_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WBEUtilsModelCompiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    compiled = compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    binary_resource = next(item for item in compiled if item.get("type") == "binary")
+    output_path = output_dir / str(binary_resource["path"])
+    output_path.unlink()
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}
+
+
+def test_static_geometry_compile_uses_cache_when_inputs_are_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WBEUtilsModelCompiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+    static_resource = {**resource, "source_type": "static_geometry", "combine_nodes": False}
+
+    first_result = compiler.compile(static_resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    second_result = compiler.compile(static_resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 0, "static_geometry": 1, "materials": 1}
+    assert second_result == first_result

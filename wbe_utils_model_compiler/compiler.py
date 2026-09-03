@@ -13,7 +13,10 @@
 # limitations under the License.
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+import shlex
 from typing import Any
 
 from . import _native
@@ -21,10 +24,14 @@ from . import _native
 
 ManifestResource = dict[str, Any]
 
+
 class WBEUtilsModelCompiler:
+    def __init__(self, cache_dir: Path | None = None) -> None:
+        self._cache_dir = cache_dir
+
     def get_supported_resource_types(self) -> list[str]:
         # Advertise the only manifest resource type this compiler can handle.
-        return ["model"]
+        return ["model", "static_geometry"]
 
     def compile(
         self,
@@ -32,10 +39,24 @@ class WBEUtilsModelCompiler:
         manifest_path: Path,
         res_dir: Path,
         res_output_dir: Path,
+        cache_dir: Path | None = None,
     ) -> list[ManifestResource]:
-        mesh_resource = self.compile_mesh(resource, manifest_path, res_dir, res_output_dir)
-        material_resources = self.compile_materials(resource, manifest_path, res_dir, res_output_dir)
-        return [mesh_resource, *material_resources]
+        active_cache_dir = self._resolve_cache_dir(cache_dir)
+        if active_cache_dir is None:
+            return self._compile_all_outputs(resource, manifest_path, res_dir, res_output_dir)
+
+        resolved_source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
+        cache_record_path = self._cache_record_path(
+            active_cache_dir, resource, manifest_path, res_dir, res_output_dir, resolved_source_path)
+        cached_resources = self._load_cached_resources_if_valid(
+            cache_record_path, resource, manifest_path, res_dir, res_output_dir, resolved_source_path)
+        if cached_resources is not None:
+            return cached_resources
+
+        compiled_resources = self._compile_all_outputs(resource, manifest_path, res_dir, res_output_dir)
+        self._write_cache_record(
+            cache_record_path, resource, manifest_path, res_dir, res_output_dir, resolved_source_path, compiled_resources)
+        return compiled_resources
 
     def compile_mesh(
         self,
@@ -43,7 +64,17 @@ class WBEUtilsModelCompiler:
         manifest_path: Path,
         res_dir: Path,
         res_output_dir: Path,
+        cache_dir: Path | None = None,
     ) -> ManifestResource:
+        return self._compile_mesh_resources(resource, manifest_path, res_dir, res_output_dir)[0]
+
+    def _compile_mesh_resources(
+        self,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+    ) -> list[ManifestResource]:
         # Reject manifest entries that are routed to the wrong compiler.
         if resource.get("type") != "model":
             raise ValueError("WBEUtilsModelCompiler only supports model resources.")
@@ -67,7 +98,7 @@ class WBEUtilsModelCompiler:
         vertex_position_scale = float(resource.get("scale_vertex_pos", 1.0))
         source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
         target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
-        return _native.compile_mesh(
+        compiled_resources = _native.compile_mesh(
             str(source_path),
             resource_id,
             graphics_pipeline_ids,
@@ -83,6 +114,49 @@ class WBEUtilsModelCompiler:
             target_front,
             combine_nodes,
         )
+        if not isinstance(compiled_resources, list) or not compiled_resources:
+            raise RuntimeError("Model compiler produced no mesh resources.")
+        return compiled_resources
+
+    def compile_static_geometry(
+        self,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+        cache_dir: Path | None = None,
+    ) -> list[ManifestResource]:
+        del cache_dir
+        if resource.get("source_type", resource.get("type")) != "static_geometry":
+            raise ValueError("WBEUtilsModelCompiler only compiles static geometry from static_geometry resources.")
+        if bool(resource.get("combine_nodes", False)):
+            raise ValueError("static_geometry preserves nodes as instances and does not support combine_nodes.")
+
+        source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
+        res_output_dir.mkdir(parents=True, exist_ok=True)
+        geometry_output_dir, geometry_path_prefix = self._resolve_geometry_output(resource, manifest_path, res_dir, res_output_dir)
+        texture_output_dir = str(resource.get("texture_output_dir", ""))
+        resource_id = str(resource.get("id", source_path.stem))
+        vertex_position_scale = float(resource.get("scale_vertex_pos", 1.0))
+        source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
+        target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
+        compiled_resources = _native.compile_static_geometry(
+            str(source_path),
+            resource_id,
+            texture_output_dir,
+            str(geometry_output_dir),
+            geometry_path_prefix,
+            vertex_position_scale,
+            source_up,
+            source_right,
+            source_front,
+            target_up,
+            target_right,
+            target_front,
+        )
+        if not isinstance(compiled_resources, list) or len(compiled_resources) != 3:
+            raise RuntimeError("Model compiler produced invalid static geometry resources.")
+        return compiled_resources
 
     def compile_materials(
         self,
@@ -90,7 +164,9 @@ class WBEUtilsModelCompiler:
         manifest_path: Path,
         res_dir: Path,
         res_output_dir: Path,
+        cache_dir: Path | None = None,
     ) -> list[ManifestResource]:
+        del cache_dir
         # Compile material metadata separately from mesh geometry.
         source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
@@ -195,3 +271,229 @@ class WBEUtilsModelCompiler:
                 # Return the first existing path so downstream native code sees a concrete location.
                 return resolved_candidate
         raise FileNotFoundError(f"Mesh resource path does not exist: {raw_path}")
+
+    def _compile_all_outputs(
+        self,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+    ) -> list[ManifestResource]:
+        if resource.get("source_type", resource.get("type")) == "static_geometry":
+            static_resources = self.compile_static_geometry(resource, manifest_path, res_dir, res_output_dir)
+            material_resources = self.compile_materials({**resource, "type": "model"}, manifest_path, res_dir, res_output_dir)
+            return [*static_resources, *material_resources]
+        mesh_resources = self._compile_mesh_resources(resource, manifest_path, res_dir, res_output_dir)
+        material_resources = self.compile_materials(resource, manifest_path, res_dir, res_output_dir)
+        return [*mesh_resources, *material_resources]
+
+    def _resolve_cache_dir(self, cache_dir: Path | None) -> Path | None:
+        active_cache_dir = cache_dir if cache_dir is not None else self._cache_dir
+        if active_cache_dir is None:
+            return None
+        return Path(active_cache_dir)
+
+    def _cache_record_path(
+        self,
+        cache_dir: Path,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+        resolved_source_path: Path,
+    ) -> Path:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_key = {
+            "resource_id": str(resource.get("id", resolved_source_path.stem)),
+            "resource_type": str(resource.get("source_type", resource.get("type"))),
+            "manifest_path": manifest_path.resolve().as_posix(),
+            "res_dir": res_dir.resolve().as_posix(),
+            "res_output_dir": res_output_dir.resolve().as_posix(),
+        }
+        digest = hashlib.sha256(json.dumps(cache_key, sort_keys=True).encode("utf-8")).hexdigest()
+        return cache_dir / f"{digest}.json"
+
+    def _load_cached_resources_if_valid(
+        self,
+        cache_record_path: Path,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+        resolved_source_path: Path,
+    ) -> list[ManifestResource] | None:
+        if not cache_record_path.is_file():
+            return None
+        try:
+            cache_record = json.loads(cache_record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(cache_record, dict):
+            return None
+        if cache_record.get("declaration_hash") != self._build_declaration_hash(
+                resource, manifest_path, res_dir, res_output_dir, resolved_source_path):
+            return None
+        if cache_record.get("source_hash") != self._hash_file(resolved_source_path):
+            return None
+        dependency_hashes = cache_record.get("dependency_hashes")
+        if not isinstance(dependency_hashes, dict):
+            return None
+        for dependency_path, expected_hash in dependency_hashes.items():
+            if not isinstance(dependency_path, str) or not isinstance(expected_hash, str):
+                return None
+            if self._hash_file(Path(dependency_path)) != expected_hash:
+                return None
+        compiled_resources = cache_record.get("compiled_resources")
+        if not isinstance(compiled_resources, list):
+            return None
+        if not self._compiled_outputs_exist(compiled_resources, res_output_dir):
+            return None
+        return compiled_resources
+
+    def _write_cache_record(
+        self,
+        cache_record_path: Path,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+        resolved_source_path: Path,
+        compiled_resources: list[ManifestResource],
+    ) -> None:
+        dependency_paths = self._collect_source_dependencies(resolved_source_path)
+        dependency_hashes: dict[str, str] = {}
+        for dependency_path in sorted(dependency_paths):
+            dependency_hashes[dependency_path.as_posix()] = self._hash_file(dependency_path)
+        cache_record = {
+            "declaration_hash": self._build_declaration_hash(resource, manifest_path, res_dir, res_output_dir, resolved_source_path),
+            "source_hash": self._hash_file(resolved_source_path),
+            "dependency_hashes": dependency_hashes,
+            "compiled_resources": compiled_resources,
+        }
+        cache_record_path.write_text(json.dumps(cache_record, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _build_declaration_hash(
+        self,
+        resource: ManifestResource,
+        manifest_path: Path,
+        res_dir: Path,
+        res_output_dir: Path,
+        resolved_source_path: Path,
+    ) -> str:
+        geometry_output_dir, geometry_path_prefix = self._resolve_geometry_output(resource, manifest_path, res_dir, res_output_dir)
+        declaration_payload = {
+            "resource": resource,
+            "manifest_path": manifest_path.resolve().as_posix(),
+            "res_dir": res_dir.resolve().as_posix(),
+            "res_output_dir": res_output_dir.resolve().as_posix(),
+            "resolved_source_path": resolved_source_path.as_posix(),
+            "geometry_output_dir": geometry_output_dir.resolve().as_posix(),
+            "geometry_path_prefix": geometry_path_prefix,
+        }
+        serialized = json.dumps(declaration_payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _hash_file(self, path: Path) -> str | None:
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError:
+            return None
+        return digest.hexdigest()
+
+    def _compiled_outputs_exist(self, compiled_resources: list[ManifestResource], res_output_dir: Path) -> bool:
+        for output_path in self._collect_output_paths(compiled_resources, res_output_dir):
+            if not output_path.is_file():
+                return False
+        return True
+
+    def _collect_output_paths(self, compiled_resources: list[ManifestResource], res_output_dir: Path) -> set[Path]:
+        output_paths: set[Path] = set()
+        for resource in compiled_resources:
+            if not isinstance(resource, dict):
+                continue
+            resource_path = resource.get("path")
+            if isinstance(resource_path, str) and resource_path:
+                output_paths.add(res_output_dir / Path(resource_path))
+            textures = resource.get("textures")
+            if not isinstance(textures, list):
+                continue
+            for texture_binding in textures:
+                if not isinstance(texture_binding, dict):
+                    continue
+                texture = texture_binding.get("texture")
+                if not isinstance(texture, dict):
+                    continue
+                texture_path = texture.get("path")
+                if isinstance(texture_path, str) and texture_path:
+                    output_paths.add(res_output_dir / Path(texture_path))
+        return output_paths
+
+    def _collect_source_dependencies(self, source_path: Path) -> set[Path]:
+        suffix = source_path.suffix.lower()
+        if suffix == ".gltf":
+            return self._collect_gltf_dependencies(source_path)
+        if suffix == ".obj":
+            return self._collect_obj_dependencies(source_path)
+        return set()
+
+    def _collect_gltf_dependencies(self, source_path: Path) -> set[Path]:
+        try:
+            source_data = json.loads(source_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        dependency_paths: set[Path] = set()
+        for group_key in ("buffers", "images"):
+            group = source_data.get(group_key, [])
+            if not isinstance(group, list):
+                continue
+            for entry in group:
+                if not isinstance(entry, dict):
+                    continue
+                uri = entry.get("uri")
+                if not isinstance(uri, str) or not uri or uri.startswith("data:") or "://" in uri:
+                    continue
+                dependency_paths.add((source_path.parent / uri).resolve())
+        return dependency_paths
+
+    def _collect_obj_dependencies(self, source_path: Path) -> set[Path]:
+        dependency_paths: set[Path] = set()
+        try:
+            lines = source_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return dependency_paths
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if not stripped.startswith("mtllib "):
+                continue
+            for mtl_name in stripped.split()[1:]:
+                mtl_path = (source_path.parent / mtl_name).resolve()
+                dependency_paths.add(mtl_path)
+                dependency_paths.update(self._collect_mtl_dependencies(mtl_path))
+        return dependency_paths
+
+    def _collect_mtl_dependencies(self, mtl_path: Path) -> set[Path]:
+        dependency_paths: set[Path] = set()
+        try:
+            lines = mtl_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return dependency_paths
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            tokens = shlex.split(stripped, comments=False, posix=True)
+            if len(tokens) < 2:
+                continue
+            command = tokens[0].lower()
+            if not (command.startswith("map_") or command in {"bump", "disp", "decal", "refl"}):
+                continue
+            dependency_paths.add((mtl_path.parent / tokens[-1]).resolve())
+        return dependency_paths

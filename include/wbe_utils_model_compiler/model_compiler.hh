@@ -46,7 +46,7 @@ public:
      *
      * @throws std::invalid_argument If the scale is not finite or either coordinate-space declaration is invalid.
      */
-    pybind11::dict compile_mesh(
+    pybind11::list compile_mesh(
         const std::filesystem::path& p_source_path,
         const std::string& p_resource_id,
         const pybind11::list& p_graphics_pipeline_ids,
@@ -61,6 +61,21 @@ public:
         const std::string& p_target_right_direction = "x",
         const std::string& p_target_front_direction = "z",
         bool p_combine_nodes = false) const;
+
+    /** Compile model source as node-preserving static geometry set resources. */
+    pybind11::list compile_static_geometry(
+        const std::filesystem::path& p_source_path,
+        const std::string& p_resource_id,
+        const std::string& p_texture_output_dir,
+        const std::filesystem::path& p_geometry_output_dir,
+        const std::string& p_geometry_path_prefix,
+        float p_vertex_position_scale = 1.0F,
+        const std::string& p_source_up_direction = "y",
+        const std::string& p_source_right_direction = "x",
+        const std::string& p_source_front_direction = "z",
+        const std::string& p_target_up_direction = "y",
+        const std::string& p_target_right_direction = "x",
+        const std::string& p_target_front_direction = "z") const;
 
     /** Compile source materials into White Bird Engine material resource dictionaries. */
     pybind11::list compile_materials(

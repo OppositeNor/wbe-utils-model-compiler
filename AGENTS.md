@@ -153,14 +153,14 @@ Run tests with `python build.py test`.
 
 ## Geometry Output
 
-- `compile_mesh` emits runtime mesh dictionaries with `geometry_path` and `geometry_sections`; it must not emit `vertices_data` or `indices_data`.
-- Geometry sidecar binaries are raw section payloads only: `float32` for `position`, `normal`, `tangent`, `bitangent`, and `uv`; `uint32` for `index`.
+- `compile_mesh` emits a mesh resource followed by one `binary` resource. Submeshes reference that binary through `vertices` and `indices` views; runtime output must not emit `vertices_data`, `indices_data`, `geometry_path`, or `geometry_sections`.
+- Geometry sidecar binaries are raw interleaved vertex payloads followed by `uint32` indices with no file header.
 - Assimp tangent-space generation is enabled. Preserve tangent and bitangent export when changing import flags or intermediate vertex fields.
 - `geometry_output_dir` is source-only and resource-root-relative. Do not leak it into runtime resource dictionaries.
 
 ## Material Output
 
-- `compile` returns the mesh resource first, followed by its material resources.
+- `compile` returns mesh/static-geometry resources first, followed by material resources. Static geometry emits one `binary`, one `static_opaque_set`, and one `static_masked_set` before materials.
 - `compile_materials` emits final runtime material dictionaries. Texture bindings use `texture_role`; inline images use `path` and
   set `flip_v` to `True`.
 - Keep material texture normalization in this package. Callers such as the engine ACP adapter must not reshape compiler output.

@@ -88,7 +88,7 @@ from pathlib import Path
 from wbe_utils_model_compiler import WBEUtilsModelCompiler
 
 
-compiler = WBEUtilsModelCompiler()
+compiler = WBEUtilsModelCompiler(cache_dir=Path("build/debug/build_cache/model_compiler"))
 
 resource = {
 	"id": "cube",
@@ -122,8 +122,16 @@ material_resources = compiler.compile_materials(
 )
 ```
 
-`compile` returns the mesh resource first, followed by its material resources. The individual `compile_mesh` and
-`compile_materials` methods remain available when only one output category is needed.
+`compile` returns mesh or static-geometry resources first, followed by material resources. Ordinary models emit a mesh resource
+and one binary resource before materials. Static geometry emits one binary resource, one `static_opaque_set`, and one
+`static_masked_set` before materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
+remain available when only one output category is needed.
+
+When `cache_dir` is provided, the compiler writes one JSON cache record per resolved resource. The cache key includes the resolved
+resource declaration, manifest and output roots, and source path. On a later call, the wrapper hashes the resource declaration,
+the source file, and any cached dependent source files such as glTF buffers/images or OBJ/MTL texture references. If none of those
+hashes changed and all previously emitted output files still exist, the wrapper returns the cached compiled resource dictionaries
+without invoking the native compiler.
 
 `res_dir` is used to resolve relative resource paths first. If the resource path is not found there, it is resolved relative to `manifest_path.parent`.
 `res_output_dir` is the root for emitted geometry sidecar binaries, copied material textures, and generated texture artifacts.
@@ -133,7 +141,7 @@ material_resources = compiler.compile_materials(
 ```python
 {
 	"id": str,
-	"type": "model",
+	"type": "model" | "static_geometry",
 	"file": str,
 	"combine_nodes": bool,
 	"graphics_pipeline_ids": list[str],
@@ -156,7 +164,7 @@ material_resources = compiler.compile_materials(
 
 Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
-All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. `combine_nodes` defaults to `false`; the `false` behavior is not implemented yet. When `true`, model nodes are flattened into one mesh and their hierarchical transforms are baked into each submesh's vertices. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
+All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
 When `texture_output_dir` is provided, regular source textures are copied under `res_output_dir / texture_output_dir`, and generated textures such as repacked roughness-metallic-ambient-occlusion images are emitted there as well.
 
@@ -170,22 +178,45 @@ When `texture_output_dir` is provided, regular source textures are copied under 
 		{
 			"id": str,
 			"type": "submesh",
-			"geometry_path": str,
-			"geometry_sections": [
-				{"slot": "position", "start": int, "size": int, "type": "vec3"},
-				{"slot": "normal", "start": int, "size": int, "type": "vec3"},
-				{"slot": "tangent", "start": int, "size": int, "type": "vec3"},
-				{"slot": "bitangent", "start": int, "size": int, "type": "vec3"},
-				{"slot": "uv", "start": int, "size": int, "type": "vec2"},
-				{"slot": "index", "start": int, "size": int, "type": "uint32"},
-			],
+			"vertices": {
+				"binary": {"binary_id": str, "start": int, "size": int},
+				"stride": int,
+				"attributes": [
+					{"role": "position", "type": "vec3", "offset": int},
+					{"role": "normal", "type": "vec3", "offset": int},
+					{"role": "tangent", "type": "vec3", "offset": int},
+					{"role": "bitangent", "type": "vec3", "offset": int},
+					{"role": "uv", "type": "vec2", "offset": int},
+				],
+			},
+			"indices": {"binary": {"binary_id": str, "start": int, "size": int}},
 			"material_id": str | None,
 		}
 	],
 }
+
+{
+	"id": str,
+	"type": "binary",
+	"path": str,
+}
 ```
 
-Geometry sidecar binaries contain raw little-endian `float32` vertex attribute values and `uint32` indices with no file header. Section metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` sections when tangent data is available for the source mesh.
+Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex attribute values followed by `uint32` indices with no file header. View metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` attributes when tangent data is available for the source mesh.
+
+## Static Geometry Resource Output
+
+```python
+[
+	{"id": "<id>.geometry", "type": "binary", "path": str},
+	{"id": "<id>.static_opaque_set", "type": "static_opaque_set", "submeshes": list[dict], "instances": list[dict]},
+	{"id": "<id>.static_masked_set", "type": "static_masked_set", "submeshes": list[dict], "instances": list[dict]},
+]
+```
+
+Static set submeshes use the same `vertices` and `indices` view shape as mesh submeshes, plus `first_instance` and
+`instance_count`. Instances store `global_transform` as exactly 16 column-major floats. glTF `MASK` primitives go to the masked
+set, `OPAQUE` primitives go to the opaque set, and `BLEND` primitives are omitted with one compiler warning.
 
 ## Material Resource Output
 
@@ -229,4 +260,4 @@ Run the full test path through the build wrapper:
 python build.py test
 ```
 
-The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh output fields, geometry sidecar files and sections, material references, copied/generated texture bindings, and relative texture paths.
+The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh/static-geometry output fields, geometry sidecar files and views, material references, copied/generated texture bindings, and relative texture paths.
