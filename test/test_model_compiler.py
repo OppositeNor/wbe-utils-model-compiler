@@ -21,12 +21,26 @@ import zlib
 
 import pytest
 import wbe_utils_model_compiler
-from wbe_utils_model_compiler import WBEUtilsModelCompiler
+from wbe_utils_model_compiler import TextureCompileRequest, WBEUtilsModelCompiler
 from wbe_utils_model_compiler import _native
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 TEST_MODEL_DIR = ROOT_DIR / "test-model"
+
+
+class RecordingTextureCompiler:
+    def __init__(self) -> None:
+        self.requests: list[TextureCompileRequest] = []
+
+    def compile_texture(self, p_request: TextureCompileRequest) -> None:
+        self.requests.append(p_request)
+        p_request.destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(p_request.source_path, p_request.destination_path)
+
+
+def _compiler() -> WBEUtilsModelCompiler:
+    return WBEUtilsModelCompiler(RecordingTextureCompiler())
 
 
 def _cube_resource() -> dict[str, object]:
@@ -37,6 +51,7 @@ def _cube_resource() -> dict[str, object]:
         "combine_nodes": True,
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
+        "texture_config": {"target_format": "sbc7", "generate_mipmap": True},
     }
 
 
@@ -201,11 +216,23 @@ def _read_rgb_png(p_path: Path) -> tuple[int, int, list[tuple[int, int, int]]]:
     return width, height, pixels
 
 
-def _rma_texture_path(p_material: dict[str, object], p_output_dir: Path) -> Path:
+def _material_resources(p_resources: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [resource for resource in p_resources if resource.get("type") == "material"]
+
+
+def _texture_resources(p_resources: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [resource for resource in p_resources if resource.get("type") == "texture"]
+
+
+def _rma_texture_path(
+    p_material: dict[str, object], p_resources: list[dict[str, object]], p_output_dir: Path
+) -> Path:
     textures = p_material["textures"]
     assert isinstance(textures, list)
     binding = next(texture for texture in textures if texture["texture_role"] == "rma")
-    return p_output_dir / binding["texture"]["path"]
+    texture_id = binding["texture_id"]
+    texture = next(resource for resource in p_resources if resource.get("id") == texture_id)
+    return p_output_dir / texture["path"]
 
 
 def _write_standalone_pbr_obj(p_directory: Path) -> Path:
@@ -229,7 +256,7 @@ def test_package_imports() -> None:
 
 
 def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = _cube_resource()
 
     compiled = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
@@ -274,18 +301,20 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
 
 
 def test_compiler_returns_mesh_before_materials(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
 
     compiled = compiler.compile(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
     assert compiled[0]["type"] == "mesh"
     assert compiled[1]["type"] == "binary"
     assert compiled[1]["id"] == "cube.mesh.geometry"
-    assert all(resource["type"] == "material" for resource in compiled[2:])
+    assert _texture_resources(compiled[2:])
+    assert _material_resources(compiled[2:])
+    assert len(_texture_resources(compiled[2:])) + len(_material_resources(compiled[2:])) == len(compiled[2:])
 
 
 def test_mesh_compilation_scales_positions_and_converts_between_coordinate_spaces(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     baseline_output_dir = tmp_path / "baseline"
     converted_output_dir = tmp_path / "converted"
     baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
@@ -323,7 +352,7 @@ def test_mesh_compilation_scales_positions_and_converts_between_coordinate_space
 
 
 def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     baseline_output_dir = tmp_path / "baseline"
     combined_output_dir = tmp_path / "combined"
     baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
@@ -369,7 +398,7 @@ def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) 
 
 
 def test_mesh_compilation_reverses_winding_for_negative_position_scale(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     baseline_output_dir = tmp_path / "baseline"
     scaled_output_dir = tmp_path / "scaled"
     baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
@@ -394,7 +423,7 @@ def test_mesh_compilation_reverses_winding_for_negative_position_scale(tmp_path:
 
 @pytest.mark.parametrize("space_key", ["source_space", "target_space"])
 def test_mesh_compilation_defaults_front_to_positive_z(tmp_path: Path, space_key: str) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     baseline_output_dir = tmp_path / "baseline"
     converted_output_dir = tmp_path / space_key
     baseline = compiler.compile_mesh(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, baseline_output_dir)
@@ -415,7 +444,7 @@ def test_mesh_compilation_defaults_front_to_positive_z(tmp_path: Path, space_key
 @pytest.mark.parametrize("space_key", ["source_space", "target_space"])
 @pytest.mark.parametrize("direction", ["X", "forward", "++x", ""])
 def test_mesh_compilation_rejects_invalid_direction(tmp_path: Path, space_key: str, direction: str) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), space_key: {"up": direction}}
 
     with pytest.raises(ValueError, match="Model direction must be one of"):
@@ -424,7 +453,7 @@ def test_mesh_compilation_rejects_invalid_direction(tmp_path: Path, space_key: s
 
 @pytest.mark.parametrize("space_key", ["source_space", "target_space"])
 def test_mesh_compilation_rejects_reused_axis(tmp_path: Path, space_key: str) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), space_key: {"up": "x", "right": "-x"}}
 
     with pytest.raises(ValueError, match="must use three different axes"):
@@ -432,9 +461,10 @@ def test_mesh_compilation_rejects_reused_axis(tmp_path: Path, space_key: str) ->
 
 
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
-    materials = compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+    resources = compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+    materials = _material_resources(resources)
 
     assert isinstance(materials, list)
     assert materials
@@ -450,13 +480,10 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     assert "rma" in texture_roles
     for texture_binding in material["textures"]:
         assert "texture_key" not in texture_binding
-        texture = texture_binding["texture"]
-        assert texture["type"] == "image"
-        assert "file" not in texture
-        assert not Path(texture["path"]).is_absolute()
-        assert texture["flip_v"] is True
-        assert texture["color_space"] in {"srgb", "rgb"}
-        assert texture["channel_count"] in {3, 4}
+        assert "texture" not in texture_binding
+        assert isinstance(texture_binding["texture_id"], str)
+    assert len(_texture_resources(resources)) == len(material["textures"])
+    assert all(not Path(texture["path"]).is_absolute() for texture in _texture_resources(resources))
 
 
 def test_materials_reject_duplicate_texture_roles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -467,7 +494,7 @@ def test_materials_reject_duplicate_texture_roles(tmp_path: Path, monkeypatch: p
 
     def compile_duplicate_materials(*p_args: object) -> list[dict[str, object]]:
         del p_args
-        texture = {"type": "image", "file": texture_path.as_posix(), "color_space": "srgb", "channel_count": 4}
+        texture = {"file": texture_path.as_posix(), "source_format": "srgb", "channel_count": 4}
         return [{
             "id": "duplicate.material",
             "type": "material",
@@ -479,7 +506,7 @@ def test_materials_reject_duplicate_texture_roles(tmp_path: Path, monkeypatch: p
         }]
 
     monkeypatch.setattr(_native, "compile_materials", compile_duplicate_materials)
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
 
     with pytest.raises(RuntimeError, match="duplicate material texture role 'albedo'"):
         compiler.compile_materials(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, output_dir)
@@ -490,20 +517,21 @@ def test_gltf_material_uses_packed_channels_and_occlusion_red_channel(tmp_path: 
     source_data = json.loads(source_path.read_text(encoding="utf-8"))
     source_data["materials"][0]["occlusionTexture"] = {"index": 1}
     source_path.write_text(json.dumps(source_data), encoding="utf-8")
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     output_dir = tmp_path / "output"
     resource = {**_cube_resource(), "file": "Cube/glTF/Cube.gltf"}
 
-    materials = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+    resources = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+    materials = _material_resources(resources)
 
-    width, height, pixels = _read_rgb_png(_rma_texture_path(materials[0], output_dir))
+    width, height, pixels = _read_rgb_png(_rma_texture_path(materials[0], resources, output_dir))
     assert (width, height) == (512, 512)
     assert set(pixels) == {(20, 0, 0)}
 
 
 def test_standalone_material_maps_use_red_channels(tmp_path: Path) -> None:
     source_path = _write_standalone_pbr_obj(tmp_path / "model")
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     output_dir = tmp_path / "output"
     resource = {
         "id": "standalone",
@@ -511,37 +539,41 @@ def test_standalone_material_maps_use_red_channels(tmp_path: Path) -> None:
         "file": source_path.as_posix(),
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
+        "texture_config": {"target_format": "sbc7", "generate_mipmap": True},
     }
 
-    materials = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+    resources = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+    materials = _material_resources(resources)
     material = next(material for material in materials if material["textures"])
 
-    width, height, pixels = _read_rgb_png(_rma_texture_path(material, output_dir))
+    width, height, pixels = _read_rgb_png(_rma_texture_path(material, resources, output_dir))
     assert (width, height) == (1, 1)
     assert pixels == [(51, 204, 255)]
 
 
 def test_masked_material_uses_masked_graphics_pipeline(tmp_path: Path) -> None:
     _make_masked_cube(tmp_path)
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
 
-    materials = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    resources = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    materials = _material_resources(resources)
 
     assert materials[0]["graphics_pipeline_ids"] == ["masked_pipeline"]
 
 
 def test_masked_material_falls_back_to_graphics_pipeline(tmp_path: Path) -> None:
     _make_masked_cube(tmp_path)
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
 
-    materials = compiler.compile_materials(_cube_resource(), tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    resources = compiler.compile_materials(_cube_resource(), tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    materials = _material_resources(resources)
 
     assert materials[0]["graphics_pipeline_ids"] == ["main_pipeline"]
 
 
 def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
 
     compiled = compiler.compile(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
@@ -565,12 +597,14 @@ def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path:
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == len(opaque_set["instances"])
     assert len(opaque_set["instances"][0]["global_transform"]) == 16
-    assert all(resource["type"] == "material" for resource in compiled[3:])
+    assert _texture_resources(compiled[3:])
+    assert _material_resources(compiled[3:])
+    assert len(_texture_resources(compiled[3:])) + len(_material_resources(compiled[3:])) == len(compiled[3:])
 
 
 def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path) -> None:
     _make_masked_cube(tmp_path)
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
 
     compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
@@ -586,7 +620,7 @@ def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path)
 
 def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _make_blend_cube(tmp_path)
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
 
     compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
@@ -603,7 +637,7 @@ def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsy
 
 def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) -> None:
     source_path = _make_hierarchical_cube(tmp_path / "source")
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False, "file": source_path.as_posix()}
 
     compiled = compiler.compile_static_geometry(resource, source_path.parent / "manifest.json", source_path.parent, tmp_path / "output")
@@ -619,7 +653,7 @@ def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) ->
 
 
 def test_static_geometry_rejects_combine_nodes(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     resource = {**_cube_resource(), "source_type": "static_geometry"}
 
     with pytest.raises(ValueError, match="does not support combine_nodes"):
@@ -659,7 +693,7 @@ def _install_compile_counters(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
 
 
 def test_compile_uses_cache_when_inputs_are_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
     manifest_path = source_root / "manifest.json"
     compile_counts = _install_compile_counters(monkeypatch)
@@ -674,7 +708,7 @@ def test_compile_uses_cache_when_inputs_are_unchanged(tmp_path: Path, monkeypatc
 
 
 def test_compile_rebuilds_when_gltf_dependency_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
     manifest_path = source_root / "manifest.json"
     output_dir = tmp_path / "output"
@@ -690,7 +724,7 @@ def test_compile_rebuilds_when_gltf_dependency_changes(tmp_path: Path, monkeypat
 
 
 def test_compile_rebuilds_when_source_file_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
     manifest_path = source_root / "manifest.json"
     output_dir = tmp_path / "output"
@@ -707,7 +741,7 @@ def test_compile_rebuilds_when_source_file_changes(tmp_path: Path, monkeypatch: 
 
 
 def test_compile_rebuilds_when_resource_declaration_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
     manifest_path = source_root / "manifest.json"
     output_dir = tmp_path / "output"
@@ -721,7 +755,7 @@ def test_compile_rebuilds_when_resource_declaration_changes(tmp_path: Path, monk
 
 
 def test_compile_rebuilds_when_generated_output_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
     manifest_path = source_root / "manifest.json"
     output_dir = tmp_path / "output"
@@ -737,7 +771,7 @@ def test_compile_rebuilds_when_generated_output_is_missing(tmp_path: Path, monke
 
 
 def test_static_geometry_compile_uses_cache_when_inputs_are_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    compiler = WBEUtilsModelCompiler()
+    compiler = _compiler()
     cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
     manifest_path = source_root / "manifest.json"
     output_dir = tmp_path / "output"

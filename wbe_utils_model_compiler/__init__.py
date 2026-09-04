@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .compiler import ManifestResource, WBEUtilsModelCompiler
+from .texture_compiler import TextureCompileRequest, TextureCompiler
 
-__all__ = ["ManifestResource", "WBEUtilsModelCompiler"]
+__all__ = ["ManifestResource", "TextureCompileRequest", "TextureCompiler", "WBEUtilsModelCompiler"]

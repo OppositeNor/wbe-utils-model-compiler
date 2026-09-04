@@ -20,13 +20,15 @@ import shlex
 from typing import Any
 
 from . import _native
+from .texture_compiler import TextureCompileRequest, TextureCompiler
 
 
 ManifestResource = dict[str, Any]
 
 
 class WBEUtilsModelCompiler:
-    def __init__(self, cache_dir: Path | None = None) -> None:
+    def __init__(self, texture_compiler: TextureCompiler, cache_dir: Path | None = None) -> None:
+        self._texture_compiler = texture_compiler
         self._cache_dir = cache_dir
 
     def get_supported_resource_types(self) -> list[str]:
@@ -177,18 +179,35 @@ class WBEUtilsModelCompiler:
         material_resources = _native.compile_materials(
             str(source_path), resource_id, graphics_pipeline_ids, masked_graphics_pipeline_ids, texture_output_dir, str(res_output_dir)
         )
-        # Convert the native texture payload into the runtime material resource contract.
-        self._normalize_material_textures(material_resources, source_path, res_output_dir)
-        return material_resources
+        texture_config = self._parse_texture_config(resource)
+        texture_resources = self._compile_material_textures(
+            material_resources, source_path, res_output_dir, resource_id, texture_output_dir, texture_config)
+        return [*texture_resources, *material_resources]
 
-    def _normalize_material_textures(
+    def _parse_texture_config(self, resource: ManifestResource) -> dict[str, object]:
+        texture_config = resource.get("texture_config")
+        if not isinstance(texture_config, dict):
+            raise ValueError("Model resources must declare a texture_config object.")
+        target_format = texture_config.get("target_format")
+        if target_format not in {"rgb", "srgb", "bc7", "sbc7"}:
+            raise ValueError("texture_config.target_format must be one of rgb, srgb, bc7, or sbc7.")
+        generate_mipmap = texture_config.get("generate_mipmap")
+        if not isinstance(generate_mipmap, bool):
+            raise ValueError("texture_config.generate_mipmap must be a boolean.")
+        return {"target_format": target_format, "generate_mipmap": generate_mipmap}
+
+    def _compile_material_textures(
         self,
         material_resources: list[ManifestResource],
         source_path: Path,
         res_output_dir: Path,
-    ) -> None:
-        # Interpret relative texture references from the model source directory.
+        resource_id: str,
+        texture_output_dir: str,
+        texture_config: dict[str, object],
+    ) -> list[ManifestResource]:
         source_dir = source_path.parent
+        texture_resources: list[ManifestResource] = []
+        compiled_texture_ids: dict[tuple[str, str, str, bool], str] = {}
         for material_resource in material_resources:
             textures = material_resource.get("textures", [])
             if not isinstance(textures, list):
@@ -215,11 +234,38 @@ class WBEUtilsModelCompiler:
                     # Leave non-file-backed textures untouched.
                     continue
                 texture_file = Path(raw_file)
-                # Normalize to a concrete filesystem path before storing a manifest path.
                 resolved_file = texture_file if texture_file.is_absolute() else source_dir / texture_file
-                texture["path"] = resolved_file.resolve().relative_to(res_output_dir.resolve()).as_posix()
-                texture["flip_v"] = True
-                del texture["file"]
+                resolved_file = resolved_file.resolve()
+                source_format = texture.get("source_format")
+                if source_format not in {"rgb", "srgb"}:
+                    raise RuntimeError("Model compiler produced an unsupported texture source format.")
+                target_format = str(texture_config["target_format"])
+                generate_mipmap = bool(texture_config["generate_mipmap"])
+                cache_key = (resolved_file.as_posix(), source_format, target_format, generate_mipmap)
+                texture_id = compiled_texture_ids.get(cache_key)
+                if texture_id is None:
+                    digest = hashlib.sha256("\0".join(map(str, cache_key)).encode("utf-8")).hexdigest()[:16]
+                    texture_id = f"{resource_id}.texture.{digest}"
+                    source_name = resolved_file.stem
+                    output_directory = Path(texture_output_dir) if texture_output_dir else Path("textures")
+                    relative_output_path = output_directory / f"{source_name}_{digest}.ktx2"
+                    destination_path = (res_output_dir / relative_output_path).resolve()
+                    self._texture_compiler.compile_texture(TextureCompileRequest(
+                        source_path=resolved_file,
+                        destination_path=destination_path,
+                        source_format=source_format,
+                        target_format=target_format,
+                        generate_mipmap=generate_mipmap,
+                    ))
+                    texture_resources.append({
+                        "id": texture_id,
+                        "type": "texture",
+                        "path": relative_output_path.as_posix(),
+                    })
+                    compiled_texture_ids[cache_key] = texture_id
+                texture_binding.pop("texture", None)
+                texture_binding["texture_id"] = texture_id
+        return texture_resources
 
     def _resolve_geometry_output(
         self,

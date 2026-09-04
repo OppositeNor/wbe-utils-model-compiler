@@ -71,7 +71,7 @@ struct IntermediateMaterialTexture
     std::string texture_key;
     std::string file;
     std::string path;
-    std::string color_space;
+    std::string source_format;
     int channel_count = 4;
 };
 
@@ -325,7 +325,9 @@ void stage_texture_file(const std::filesystem::path& p_source_directory,
     const std::filesystem::path& p_texture_output_root,
     IntermediateMaterialTexture& p_texture)
 {
-    if (p_texture_output_root.empty() || p_texture_output_dir.empty() || p_texture_path.C_Str()[0] == '*')
+    (void)p_texture_output_dir;
+    (void)p_texture_output_root;
+    if (p_texture_path.C_Str()[0] == '*')
     {
         return;
     }
@@ -333,22 +335,7 @@ void stage_texture_file(const std::filesystem::path& p_source_directory,
     const std::filesystem::path source_texture_path(p_texture_path.C_Str());
     const std::filesystem::path resolved_source_path =
         source_texture_path.is_absolute() ? source_texture_path : p_source_directory / source_texture_path;
-    const std::filesystem::path relative_output_path = texture_output_path(p_texture_path, p_texture_output_dir);
-    const std::filesystem::path output_path = p_texture_output_root / relative_output_path;
-
-    std::filesystem::create_directories(output_path.parent_path());
-
-    std::error_code error_code;
-    std::filesystem::copy_file(
-        resolved_source_path, output_path, std::filesystem::copy_options::overwrite_existing, error_code);
-    if (error_code)
-    {
-        throw std::runtime_error(
-            "Failed to copy material texture: " + resolved_source_path.generic_string() + " -> " + output_path.generic_string());
-    }
-
-    p_texture.file = std::filesystem::absolute(output_path).generic_string();
-    p_texture.path = relative_output_path.generic_string();
+    p_texture.file = std::filesystem::absolute(resolved_source_path).generic_string();
 }
 
 bool add_texture(
@@ -356,7 +343,7 @@ bool add_texture(
     const aiMaterial* p_material,
     aiTextureType p_texture_type,
     const std::string& p_texture_key,
-    const std::string& p_color_space,
+    const std::string& p_source_format,
     int p_channel_count,
     const std::string& p_texture_output_dir,
     const std::filesystem::path& p_texture_output_root,
@@ -372,7 +359,7 @@ bool add_texture(
         .texture_key = p_texture_key,
         .file = std::filesystem::path(texture_path.C_Str()).generic_string(),
         .path = texture_output_path(texture_path, p_texture_output_dir),
-        .color_space = p_color_space,
+        .source_format = p_source_format,
         .channel_count = p_channel_count,
     });
     stage_texture_file(p_source_directory, texture_path, p_texture_output_dir, p_texture_output_root, p_textures.back());
@@ -569,7 +556,7 @@ bool add_rma_texture(const aiMaterial* p_material,
         .texture_key = "rma",
         .file = source_texture_path.generic_string(),
         .path = (std::filesystem::path(p_texture_output_dir) / source_texture_path.filename()).generic_string(),
-        .color_space = "rgb",
+        .source_format = "rgb",
         .channel_count = 3,
     });
     if (!p_texture_output_root.empty())
@@ -1252,9 +1239,8 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
 py::dict to_python(const IntermediateMaterialTexture& p_texture)
 {
     py::dict texture;
-    texture["type"] = "image";
     texture["file"] = p_texture.file;
-    texture["color_space"] = p_texture.color_space;
+    texture["source_format"] = p_texture.source_format;
     texture["channel_count"] = p_texture.channel_count;
 
     py::dict result;

@@ -85,10 +85,19 @@ pip install . --no-deps --no-build-isolation
 ```python
 from pathlib import Path
 
-from wbe_utils_model_compiler import WBEUtilsModelCompiler
+from wbe_utils_model_compiler import TextureCompileRequest, WBEUtilsModelCompiler
 
 
-compiler = WBEUtilsModelCompiler(cache_dir=Path("build/debug/build_cache/model_compiler"))
+class TextureCompiler:
+	def compile_texture(self, request: TextureCompileRequest) -> None:
+		# Host application implementation: compile request.source_path to a KTX2 file.
+		...
+
+
+compiler = WBEUtilsModelCompiler(
+	texture_compiler=TextureCompiler(),
+	cache_dir=Path("build/debug/build_cache/model_compiler"),
+)
 
 resource = {
 	"id": "cube",
@@ -98,6 +107,7 @@ resource = {
 	"graphics_pipeline_ids": ["main_pipeline"],
 	"masked_graphics_pipeline_ids": ["masked_pipeline"],
 	"texture_output_dir": "textures",
+	"texture_config": {"target_format": "bc7", "generate_mipmap": True},
 }
 
 resources = compiler.compile(
@@ -147,6 +157,10 @@ without invoking the native compiler.
 	"graphics_pipeline_ids": list[str],
 	"masked_graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
+	"texture_config": {
+		"target_format": "rgb" | "srgb" | "bc7" | "sbc7",
+		"generate_mipmap": bool,
+	},
 	"geometry_output_dir": str,
 	"scale_vertex_pos": float,
 	"source_space": {
@@ -164,9 +178,9 @@ without invoking the native compiler.
 
 Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
-All fields except `type` and `file` are optional at runtime. When `id` is omitted, the source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
+`type`, `file`, and `texture_config` are required. When `id` is omitted, the source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
-When `texture_output_dir` is provided, regular source textures are copied under `res_output_dir / texture_output_dir`, and generated textures such as repacked roughness-metallic-ambient-occlusion images are emitted there as well.
+When `texture_output_dir` is provided, the injected texture compiler writes KTX2 textures under `res_output_dir / texture_output_dir`. Generated inputs such as repacked roughness-metallic-ambient-occlusion images are compiled through the same interface.
 
 ## Mesh Resource Output
 
@@ -221,22 +235,13 @@ set, `OPAQUE` primitives go to the opaque set, and `BLEND` primitives are omitte
 ## Material Resource Output
 
 ```python
+{"id": str, "type": "texture", "path": str}
+
 {
 	"id": str,
 	"type": "material",
 	"graphics_pipeline_ids": list[str],
-	"textures": [
-		{
-			"texture_role": str,
-			"texture": {
-				"type": "image",
-				"path": str,
-				"color_space": str,
-				"channel_count": int,
-				"flip_v": True,
-			},
-		}
-	],
+	"textures": [{"texture_role": str, "texture_id": str}],
 }
 ```
 
