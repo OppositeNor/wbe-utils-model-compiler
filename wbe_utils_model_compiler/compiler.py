@@ -20,6 +20,7 @@ import shlex
 from typing import Any
 
 from . import _native
+from ._version import __version__
 from .texture_compiler import TextureCompileRequest, TextureCompiler
 
 
@@ -34,6 +35,9 @@ class WBEUtilsModelCompiler:
     def get_supported_resource_types(self) -> list[str]:
         # Advertise the only manifest resource type this compiler can handle.
         return ["model", "static_geometry"]
+
+    def _get_cache_version(self) -> str:
+        return __version__
 
     def compile(
         self,
@@ -156,7 +160,7 @@ class WBEUtilsModelCompiler:
             target_right,
             target_front,
         )
-        if not isinstance(compiled_resources, list) or len(compiled_resources) != 3:
+        if not isinstance(compiled_resources, list) or len(compiled_resources) != 4:
             raise RuntimeError("Model compiler produced invalid static geometry resources.")
         return compiled_resources
 
@@ -376,6 +380,8 @@ class WBEUtilsModelCompiler:
             return None
         if not isinstance(cache_record, dict):
             return None
+        if cache_record.get("compiler_version") != self._get_cache_version():
+            return None
         if cache_record.get("declaration_hash") != self._build_declaration_hash(
                 resource, manifest_path, res_dir, res_output_dir, resolved_source_path):
             return None
@@ -411,6 +417,7 @@ class WBEUtilsModelCompiler:
         for dependency_path in sorted(dependency_paths):
             dependency_hashes[dependency_path.as_posix()] = self._hash_file(dependency_path)
         cache_record = {
+            "compiler_version": self._get_cache_version(),
             "declaration_hash": self._build_declaration_hash(resource, manifest_path, res_dir, res_output_dir, resolved_source_path),
             "source_hash": self._hash_file(resolved_source_path),
             "dependency_hashes": dependency_hashes,

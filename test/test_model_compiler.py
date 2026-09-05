@@ -627,8 +627,8 @@ def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsy
 
     captured = capsys.readouterr()
     assert captured.out.count("static_geometry omits BLEND primitives") == 1
-    opaque_set = compiled[1]
-    masked_set = compiled[2]
+    opaque_set = compiled[2]
+    masked_set = compiled[3]
     assert opaque_set["submeshes"] == []
     assert opaque_set["instances"] == []
     assert masked_set["submeshes"] == []
@@ -642,10 +642,16 @@ def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) ->
 
     compiled = compiler.compile_static_geometry(resource, source_path.parent / "manifest.json", source_path.parent, tmp_path / "output")
 
-    opaque_set = compiled[1]
+    vertex_binary = compiled[0]
+    index_binary = compiled[1]
+    opaque_set = compiled[2]
+    assert vertex_binary["type"] == "binary"
+    assert index_binary["type"] == "binary"
     assert len(opaque_set["submeshes"]) == 1
     assert len(opaque_set["instances"]) == 2
     submesh = opaque_set["submeshes"][0]
+    assert submesh["vertices"]["binary"]["binary_id"] == vertex_binary["id"]
+    assert submesh["indices"]["binary"]["binary_id"] == index_binary["id"]
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == 2
     second_transform = opaque_set["instances"][1]["global_transform"]
@@ -783,3 +789,17 @@ def test_static_geometry_compile_uses_cache_when_inputs_are_unchanged(tmp_path: 
 
     assert compile_counts == {"mesh": 0, "static_geometry": 1, "materials": 1}
     assert second_result == first_result
+
+
+def test_compile_rebuilds_when_compiler_version_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = _compiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    monkeypatch.setattr(compiler, "_get_cache_version", lambda: "2")
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}

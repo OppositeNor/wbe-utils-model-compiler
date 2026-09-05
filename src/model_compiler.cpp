@@ -1087,6 +1087,75 @@ py::dict write_submesh_geometry(const IntermediateSubmesh& p_submesh,
     return result;
 }
 
+py::dict write_static_submesh_geometry(const IntermediateSubmesh& p_submesh,
+    std::ofstream& p_vertex_output_file,
+    const std::filesystem::path& p_vertex_output_path,
+    size_t& p_vertex_offset,
+    const std::string& p_vertex_binary_id,
+    std::ofstream& p_index_output_file,
+    const std::filesystem::path& p_index_output_path,
+    size_t& p_index_offset,
+    const std::string& p_index_binary_id)
+{
+    py::list attributes;
+    size_t stride = 0;
+    attributes.append(make_vertex_attribute("position", "vec3", stride));
+    stride += 3 * sizeof(float);
+    if (p_submesh.has_normal)
+    {
+        attributes.append(make_vertex_attribute("normal", "vec3", stride));
+        stride += 3 * sizeof(float);
+    }
+    if (p_submesh.has_tangent_space)
+    {
+        attributes.append(make_vertex_attribute("tangent", "vec3", stride));
+        stride += 3 * sizeof(float);
+        attributes.append(make_vertex_attribute("bitangent", "vec3", stride));
+        stride += 3 * sizeof(float);
+    }
+    if (p_submesh.has_uv)
+    {
+        attributes.append(make_vertex_attribute("uv", "vec2", stride));
+        stride += 2 * sizeof(float);
+    }
+
+    const size_t vertex_start = p_vertex_offset;
+    for (const IntermediateVertex& vertex : p_submesh.vertices)
+    {
+        write_vec3_value(p_vertex_output_file, p_vertex_output_path, p_vertex_offset, vertex, &IntermediateVertex::position);
+        if (p_submesh.has_normal)
+        {
+            write_vec3_value(p_vertex_output_file, p_vertex_output_path, p_vertex_offset, vertex, &IntermediateVertex::normal);
+        }
+        if (p_submesh.has_tangent_space)
+        {
+            write_vec3_value(p_vertex_output_file, p_vertex_output_path, p_vertex_offset, vertex, &IntermediateVertex::tangent);
+            write_vec3_value(p_vertex_output_file, p_vertex_output_path, p_vertex_offset, vertex, &IntermediateVertex::bitangent);
+        }
+        if (p_submesh.has_uv)
+        {
+            write_vec2_value(p_vertex_output_file, p_vertex_output_path, p_vertex_offset, vertex);
+        }
+    }
+    const size_t vertex_size = p_vertex_offset - vertex_start;
+
+    const size_t index_start = p_index_offset;
+    write_indices(p_index_output_file, p_index_output_path, p_index_offset, p_submesh);
+
+    py::dict vertices;
+    vertices["binary"] = make_binary_view(p_vertex_binary_id, vertex_start, vertex_size);
+    vertices["stride"] = stride;
+    vertices["attributes"] = attributes;
+
+    py::dict indices;
+    indices["binary"] = make_binary_view(p_index_binary_id, index_start, p_index_offset - index_start);
+
+    py::dict result;
+    result["vertices"] = vertices;
+    result["indices"] = indices;
+    return result;
+}
+
 py::dict to_python(const IntermediateSubmesh& p_submesh, const py::dict& p_geometry_views)
 {
     py::dict result;
@@ -1181,21 +1250,38 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
     const std::string& p_geometry_path_prefix)
 {
     std::filesystem::create_directories(p_geometry_output_dir);
-    const std::string binary_id = p_resource_id + ".geometry";
-    const std::string file_name = sanitize_file_stem(binary_id) + ".bin";
-    const std::filesystem::path output_path = p_geometry_output_dir / file_name;
-    std::ofstream output_file(output_path, std::ios::binary);
-    if (!output_file.is_open())
+    const std::string vertex_binary_id = p_resource_id + ".vertices";
+    const std::string vertex_file_name = sanitize_file_stem(vertex_binary_id) + ".bin";
+    const std::filesystem::path vertex_output_path = p_geometry_output_dir / vertex_file_name;
+    std::ofstream vertex_output_file(vertex_output_path, std::ios::binary);
+    if (!vertex_output_file.is_open())
     {
-        throw std::runtime_error("Failed to open static geometry binary for writing: " + output_path.generic_string());
+        throw std::runtime_error("Failed to open static geometry vertex binary for writing: " + vertex_output_path.generic_string());
+    }
+    const std::string index_binary_id = p_resource_id + ".indices";
+    const std::string index_file_name = sanitize_file_stem(index_binary_id) + ".bin";
+    const std::filesystem::path index_output_path = p_geometry_output_dir / index_file_name;
+    std::ofstream index_output_file(index_output_path, std::ios::binary);
+    if (!index_output_file.is_open())
+    {
+        throw std::runtime_error("Failed to open static geometry index binary for writing: " + index_output_path.generic_string());
     }
 
     std::vector<py::dict> geometry_views;
     geometry_views.reserve(p_scene.submeshes.size());
-    size_t offset = 0;
+    size_t vertex_offset = 0;
+    size_t index_offset = 0;
     for (const IntermediateSubmesh& submesh : p_scene.submeshes)
     {
-        geometry_views.push_back(write_submesh_geometry(submesh, output_file, output_path, offset, binary_id));
+        geometry_views.push_back(write_static_submesh_geometry(submesh,
+            vertex_output_file,
+            vertex_output_path,
+            vertex_offset,
+            vertex_binary_id,
+            index_output_file,
+            index_output_path,
+            index_offset,
+            index_binary_id));
     }
 
     py::list opaque_submeshes;
@@ -1230,7 +1316,8 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
     }
 
     py::list result;
-    result.append(binary_to_python(binary_id, geometry_path_for(file_name, p_geometry_path_prefix)));
+    result.append(binary_to_python(vertex_binary_id, geometry_path_for(vertex_file_name, p_geometry_path_prefix)));
+    result.append(binary_to_python(index_binary_id, geometry_path_for(index_file_name, p_geometry_path_prefix)));
     result.append(make_static_geometry_set(p_resource_id + ".static_opaque_set", "static_opaque_set", opaque_submeshes, opaque_instances));
     result.append(make_static_geometry_set(p_resource_id + ".static_masked_set", "static_masked_set", masked_submeshes, masked_instances));
     return result;
