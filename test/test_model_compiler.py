@@ -148,6 +148,10 @@ def _vec3_section(geometry_path: Path, submesh: dict[str, object], slot: str) ->
     return list(struct.iter_unpack("<fff", _section_data(geometry_path, submesh, slot)))
 
 
+def _vec2_section(geometry_path: Path, submesh: dict[str, object], slot: str) -> list[tuple[float, float]]:
+    return list(struct.iter_unpack("<ff", _section_data(geometry_path, submesh, slot)))
+
+
 def _index_section(geometry_path: Path, submesh: dict[str, object]) -> list[int]:
     return [value[0] for value in struct.iter_unpack("<I", _section_data(geometry_path, submesh, "index"))]
 
@@ -484,6 +488,45 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
         assert isinstance(texture_binding["texture_id"], str)
     assert len(_texture_resources(resources)) == len(material["textures"])
     assert all(not Path(texture["path"]).is_absolute() for texture in _texture_resources(resources))
+
+
+@pytest.mark.parametrize("flip_v", [None, False, True])
+@pytest.mark.parametrize("static_geometry", [False, True])
+def test_geometry_compilation_converts_assimp_uv_origin(
+    tmp_path: Path, flip_v: bool | None, static_geometry: bool
+) -> None:
+    source_path = _write_standalone_pbr_obj(tmp_path / "model")
+    compiler = _compiler()
+    resource = {
+        "id": "standalone",
+        "type": "model",
+        "file": source_path.as_posix(),
+        "combine_nodes": True,
+        "graphics_pipeline_ids": ["main_pipeline"],
+        "texture_output_dir": "textures",
+        "texture_config": {"target_format": "sbc7", "generate_mipmap": True},
+    }
+
+    if flip_v is not None:
+        resource["flip_v"] = flip_v
+    output_dir = tmp_path / "output"
+    if static_geometry:
+        resource["source_type"] = "static_geometry"
+        resource["combine_nodes"] = False
+        resources = compiler.compile_static_geometry(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+        compiled = next(item for item in resources if item["type"] == "static_opaque_set")
+        submesh = compiled["submeshes"][0]
+        binary_id = submesh["vertices"]["binary"]["binary_id"]
+        binary = next(item for item in resources if item["id"] == binary_id)
+        binary_path = output_dir / binary["path"]
+    else:
+        compiled = compiler.compile_mesh(resource, tmp_path / "manifest.json", tmp_path, output_dir)
+        submesh = compiled["submeshes"][0]
+        binary_path = _binary_path(output_dir, submesh)
+    uv_values = _vec2_section(binary_path, submesh, "uv")
+    # OBJ UVs already use Assimp's bottom-left convention; the default converts them to top-left.
+    expected = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] if flip_v else [(0.0, 1.0), (1.0, 1.0), (0.0, 0.0)]
+    assert uv_values == pytest.approx(expected)
 
 
 def test_materials_reject_duplicate_texture_roles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

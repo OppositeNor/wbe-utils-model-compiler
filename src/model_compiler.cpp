@@ -828,16 +828,29 @@ IntermediateMaterial import_material(
     return result;
 }
 
+unsigned int import_flags(bool p_flip_v)
+{
+    unsigned int flags = aiProcess_Triangulate | aiProcess_GenNormals | aiProcess_CalcTangentSpace |
+                         aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality;
+    // Assimp normalizes UVs to a bottom-left origin, including flipping glTF's native top-left UVs.
+    // Flip them back for the engine's top-left convention by default; flip_v opts into the opposite orientation.
+    if (!p_flip_v)
+    {
+        flags |= aiProcess_FlipUVs;
+    }
+    return flags;
+}
+
 IntermediateScene import_scene(const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
     const std::string& p_texture_output_dir,
     const VertexTransform& p_transform,
-    const std::filesystem::path& p_texture_output_root)
+    const std::filesystem::path& p_texture_output_root,
+    bool p_flip_v = false)
 {
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(
-        p_source_path.string(),
-        aiProcess_Triangulate | aiProcess_GenNormals | aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality);
+        p_source_path.string(), import_flags(p_flip_v));
     if (scene == nullptr)
     {
         throw std::runtime_error("Assimp failed to load mesh asset: " + std::string(importer.GetErrorString()));
@@ -877,12 +890,12 @@ StaticGeometryScene import_static_geometry_scene(const std::filesystem::path& p_
     const std::string& p_resource_id,
     const std::string& p_texture_output_dir,
     const VertexTransform& p_transform,
-    const std::filesystem::path& p_texture_output_root)
+    const std::filesystem::path& p_texture_output_root,
+    bool p_flip_v = false)
 {
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(
-        p_source_path.string(),
-        aiProcess_Triangulate | aiProcess_GenNormals | aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality);
+        p_source_path.string(), import_flags(p_flip_v));
     if (scene == nullptr)
     {
         throw std::runtime_error("Assimp failed to load static geometry asset: " + std::string(importer.GetErrorString()));
@@ -1372,7 +1385,8 @@ py::list ModelCompiler::compile_mesh(
     const std::string& p_target_up_direction,
     const std::string& p_target_right_direction,
     const std::string& p_target_front_direction,
-    bool p_combine_nodes) const
+    bool p_combine_nodes,
+    bool p_flip_v) const
 {
     (void)p_graphics_pipeline_ids;
     if (!p_combine_nodes)
@@ -1387,7 +1401,7 @@ py::list ModelCompiler::compile_mesh(
         p_target_up_direction,
         p_target_right_direction,
         p_target_front_direction);
-    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir, transform, {});
+    const IntermediateScene scene = import_scene(p_source_path, p_resource_id, p_texture_output_dir, transform, {}, p_flip_v);
 
     const std::string mesh_id = p_resource_id + ".mesh";
     return mesh_resources_to_python(scene, mesh_id, p_geometry_output_dir, p_geometry_path_prefix);
@@ -1405,7 +1419,8 @@ py::list ModelCompiler::compile_static_geometry(
     const std::string& p_source_front_direction,
     const std::string& p_target_up_direction,
     const std::string& p_target_right_direction,
-    const std::string& p_target_front_direction) const
+    const std::string& p_target_front_direction,
+    bool p_flip_v) const
 {
     const VertexTransform transform = make_vertex_transform(p_vertex_position_scale,
         p_source_up_direction,
@@ -1414,7 +1429,7 @@ py::list ModelCompiler::compile_static_geometry(
         p_target_up_direction,
         p_target_right_direction,
         p_target_front_direction);
-    const StaticGeometryScene scene = import_static_geometry_scene(p_source_path, p_resource_id, p_texture_output_dir, transform, {});
+    const StaticGeometryScene scene = import_static_geometry_scene(p_source_path, p_resource_id, p_texture_output_dir, transform, {}, p_flip_v);
     return static_geometry_resources_to_python(scene, p_resource_id, p_geometry_output_dir, p_geometry_path_prefix);
 }
 

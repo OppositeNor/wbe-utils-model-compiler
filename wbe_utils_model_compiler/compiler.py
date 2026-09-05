@@ -37,7 +37,7 @@ class WBEUtilsModelCompiler:
         return ["model", "static_geometry"]
 
     def _get_cache_version(self) -> str:
-        return __version__
+        return f"{__version__}:top-left-uv-v1"
 
     def compile(
         self,
@@ -101,6 +101,9 @@ class WBEUtilsModelCompiler:
         resource_id = str(resource.get("id", source_path.stem))
         graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
         combine_nodes = bool(resource.get("combine_nodes", False))
+        flip_v = resource.get("flip_v", False)
+        if not isinstance(flip_v, bool):
+            raise ValueError("Model flip_v must be a boolean.")
         vertex_position_scale = float(resource.get("scale_vertex_pos", 1.0))
         source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
         target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
@@ -119,6 +122,7 @@ class WBEUtilsModelCompiler:
             target_right,
             target_front,
             combine_nodes,
+            flip_v,
         )
         if not isinstance(compiled_resources, list) or not compiled_resources:
             raise RuntimeError("Model compiler produced no mesh resources.")
@@ -143,6 +147,9 @@ class WBEUtilsModelCompiler:
         geometry_output_dir, geometry_path_prefix = self._resolve_geometry_output(resource, manifest_path, res_dir, res_output_dir)
         texture_output_dir = str(resource.get("texture_output_dir", ""))
         resource_id = str(resource.get("id", source_path.stem))
+        flip_v = resource.get("flip_v", False)
+        if not isinstance(flip_v, bool):
+            raise ValueError("Model flip_v must be a boolean.")
         vertex_position_scale = float(resource.get("scale_vertex_pos", 1.0))
         source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
         target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
@@ -159,6 +166,7 @@ class WBEUtilsModelCompiler:
             target_up,
             target_right,
             target_front,
+            flip_v,
         )
         if not isinstance(compiled_resources, list) or len(compiled_resources) != 4:
             raise RuntimeError("Model compiler produced invalid static geometry resources.")
@@ -240,7 +248,7 @@ class WBEUtilsModelCompiler:
                 texture_file = Path(raw_file)
                 resolved_file = texture_file if texture_file.is_absolute() else source_dir / texture_file
                 resolved_file = resolved_file.resolve()
-                source_format = texture.get("source_format")
+                source_format = texture.get("source_format", texture.get("color_space"))
                 if source_format not in {"rgb", "srgb"}:
                     raise RuntimeError("Model compiler produced an unsupported texture source format.")
                 target_format = str(texture_config["target_format"])

@@ -27,6 +27,8 @@ class TextureCompileRequest:
     source_format: str
     target_format: str
     generate_mipmap: bool
+    flip_h: bool = False
+    flip_v: bool = False
 
 
 @runtime_checkable

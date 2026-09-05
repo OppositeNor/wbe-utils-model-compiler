@@ -162,7 +162,7 @@ Run tests with `python build.py test`.
 
 - `compile` returns mesh/static-geometry resources first, followed by material resources. Static geometry emits one `binary`, one `static_opaque_set`, and one `static_masked_set` before materials.
 - `compile_materials` emits final runtime material dictionaries. Texture bindings use `texture_role`; inline images use `path` and
-  set `flip_v` to `True`.
+  do not apply a vertical flip.
 - Keep material texture normalization in this package. Callers such as the engine ACP adapter must not reshape compiler output.
 
 ## Reflection / Codegen

@@ -44,6 +44,7 @@ public:
      * Source-space positions and direction vectors are converted to the target space. Each space must assign up,
      * right, and front to three distinct signed axes.
      *
+     * @param p_flip_v Keep Assimp's bottom-left UVs instead of the default top-left output.
      * @throws std::invalid_argument If the scale is not finite or either coordinate-space declaration is invalid.
      */
     pybind11::list compile_mesh(
@@ -60,7 +61,8 @@ public:
         const std::string& p_target_up_direction = "y",
         const std::string& p_target_right_direction = "x",
         const std::string& p_target_front_direction = "z",
-        bool p_combine_nodes = false) const;
+        bool p_combine_nodes = false,
+        bool p_flip_v = false) const;
 
     /** Compile model source as node-preserving static geometry set resources. */
     pybind11::list compile_static_geometry(
@@ -75,7 +77,8 @@ public:
         const std::string& p_source_front_direction = "z",
         const std::string& p_target_up_direction = "y",
         const std::string& p_target_right_direction = "x",
-        const std::string& p_target_front_direction = "z") const;
+        const std::string& p_target_front_direction = "z",
+        bool p_flip_v = false) const;
 
     /** Compile source materials into White Bird Engine material resource dictionaries. */
     pybind11::list compile_materials(

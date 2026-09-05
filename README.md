@@ -255,7 +255,7 @@ B -> ambient occlusion
 
 Generated resource paths are relative; absolute source paths are not embedded in returned texture resources.
 For emitted material textures, `texture.path` is relative to `res_output_dir`, typically under `texture_output_dir` when that field is configured.
-Assimp imports UV coordinates with a bottom-left origin, so emitted textures set `flip_v` to `True` for the engine image loader.
+The compiler enables Assimp's `aiProcess_FlipUVs` by default to convert its bottom-left UV convention to the engine's top-left convention. Set `flip_v: true` on a `model` or `static_geometry` resource to disable that conversion; omitted or `false` keeps the top-left default. This option changes geometry UVs, not emitted material texture pixels.
 
 ## Tests
 

@@ -40,7 +40,8 @@ PYBIND11_MODULE(_native, p_module)
            const std::string& p_target_up_direction,
            const std::string& p_target_right_direction,
            const std::string& p_target_front_direction,
-           bool p_combine_nodes) -> py::list {
+           bool p_combine_nodes,
+           bool p_flip_v) -> py::list {
             const wbe::model_compiler::ModelCompiler compiler;
             return compiler.compile_mesh(std::filesystem::path(p_source_path),
                 p_resource_id,
@@ -55,7 +56,8 @@ PYBIND11_MODULE(_native, p_module)
                 p_target_up_direction,
                 p_target_right_direction,
                 p_target_front_direction,
-                p_combine_nodes);
+                p_combine_nodes,
+                p_flip_v);
         },
         py::arg("source_path"),
         py::arg("resource_id"),
@@ -70,7 +72,8 @@ PYBIND11_MODULE(_native, p_module)
         py::arg("target_up_direction") = "y",
         py::arg("target_right_direction") = "x",
         py::arg("target_front_direction") = "z",
-        py::arg("combine_nodes") = false);
+        py::arg("combine_nodes") = false,
+        py::arg("flip_v") = false);
 
     p_module.def(
         "compile_static_geometry",
@@ -85,7 +88,8 @@ PYBIND11_MODULE(_native, p_module)
            const std::string& p_source_front_direction,
            const std::string& p_target_up_direction,
            const std::string& p_target_right_direction,
-           const std::string& p_target_front_direction) -> py::list {
+           const std::string& p_target_front_direction,
+           bool p_flip_v) -> py::list {
             const wbe::model_compiler::ModelCompiler compiler;
             return compiler.compile_static_geometry(std::filesystem::path(p_source_path),
                 p_resource_id,
@@ -98,7 +102,8 @@ PYBIND11_MODULE(_native, p_module)
                 p_source_front_direction,
                 p_target_up_direction,
                 p_target_right_direction,
-                p_target_front_direction);
+                p_target_front_direction,
+                p_flip_v);
         },
         py::arg("source_path"),
         py::arg("resource_id"),
@@ -111,7 +116,8 @@ PYBIND11_MODULE(_native, p_module)
         py::arg("source_front_direction") = "z",
         py::arg("target_up_direction") = "y",
         py::arg("target_right_direction") = "x",
-        py::arg("target_front_direction") = "z");
+        py::arg("target_front_direction") = "z",
+        py::arg("flip_v") = false);
 
     p_module.def(
         "compile_materials",
