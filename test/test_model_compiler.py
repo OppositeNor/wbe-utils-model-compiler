@@ -51,7 +51,10 @@ def _cube_resource() -> dict[str, object]:
         "combine_nodes": True,
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
-        "texture_config": {"target_format": "sbc7", "generate_mipmap": True},
+        "texture_config": {
+            "default": {"target_format": "sbc7", "generate_mipmap": True},
+            "roles": {},
+        },
     }
 
 
@@ -490,6 +493,45 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     assert all(not Path(texture["path"]).is_absolute() for texture in _texture_resources(resources))
 
 
+def test_materials_select_role_texture_config_and_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    texture_path = TEST_MODEL_DIR / "Cube" / "glTF" / "Cube_BaseColor.png"
+
+    def compile_materials(*p_args: object) -> list[dict[str, object]]:
+        del p_args
+        texture = {"file": texture_path.as_posix(), "source_format": "srgb", "channel_count": 4}
+        return [{
+            "id": "arbitrary.material",
+            "type": "material",
+            "graphics_pipeline_ids": ["main_pipeline"],
+            "textures": [
+                {"texture_key": "custom_detail", "texture": dict(texture)},
+                {"texture_key": "unconfigured_role", "texture": dict(texture)},
+            ],
+        }]
+
+    monkeypatch.setattr(_native, "compile_materials", compile_materials)
+    texture_compiler = RecordingTextureCompiler()
+    compiler = WBEUtilsModelCompiler(texture_compiler)
+    resource = {
+        **_cube_resource(),
+        "texture_config": {
+            "default": {"target_format": "sbc7", "generate_mipmap": False},
+            "roles": {
+                "custom_detail": {"target_format": "bc5", "generate_mipmap": True},
+            },
+        },
+    }
+
+    compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+    assert [(request.target_format, request.generate_mipmap) for request in texture_compiler.requests] == [
+        ("bc5", True),
+        ("sbc7", False),
+    ]
+
+
 @pytest.mark.parametrize("flip_v", [None, False, True])
 @pytest.mark.parametrize("static_geometry", [False, True])
 def test_geometry_compilation_converts_assimp_uv_origin(
@@ -504,7 +546,10 @@ def test_geometry_compilation_converts_assimp_uv_origin(
         "combine_nodes": True,
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
-        "texture_config": {"target_format": "sbc7", "generate_mipmap": True},
+        "texture_config": {
+            "default": {"target_format": "sbc7", "generate_mipmap": True},
+            "roles": {},
+        },
     }
 
     if flip_v is not None:
@@ -582,7 +627,10 @@ def test_standalone_material_maps_use_red_channels(tmp_path: Path) -> None:
         "file": source_path.as_posix(),
         "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
-        "texture_config": {"target_format": "sbc7", "generate_mipmap": True},
+        "texture_config": {
+            "default": {"target_format": "sbc7", "generate_mipmap": True},
+            "roles": {},
+        },
     }
 
     resources = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, output_dir)

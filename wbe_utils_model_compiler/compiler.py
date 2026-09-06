@@ -191,21 +191,47 @@ class WBEUtilsModelCompiler:
         material_resources = _native.compile_materials(
             str(source_path), resource_id, graphics_pipeline_ids, masked_graphics_pipeline_ids, texture_output_dir, str(res_output_dir)
         )
-        texture_config = self._parse_texture_config(resource)
+        default_texture_config, role_texture_configs = self._parse_texture_config(resource)
         texture_resources = self._compile_material_textures(
-            material_resources, source_path, res_output_dir, resource_id, texture_output_dir, texture_config)
+            material_resources,
+            source_path,
+            res_output_dir,
+            resource_id,
+            texture_output_dir,
+            default_texture_config,
+            role_texture_configs,
+        )
         return [*texture_resources, *material_resources]
 
-    def _parse_texture_config(self, resource: ManifestResource) -> dict[str, object]:
+    def _parse_texture_config(
+        self, resource: ManifestResource
+    ) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
         texture_config = resource.get("texture_config")
         if not isinstance(texture_config, dict):
             raise ValueError("Model resources must declare a texture_config object.")
-        target_format = texture_config.get("target_format")
-        if target_format not in {"rgb", "srgb", "bc7", "sbc7"}:
-            raise ValueError("texture_config.target_format must be one of rgb, srgb, bc7, or sbc7.")
-        generate_mipmap = texture_config.get("generate_mipmap")
+
+        default_config = self._parse_texture_role_config(texture_config.get("default"), "texture_config.default")
+        roles_value = texture_config.get("roles", {})
+        if not isinstance(roles_value, dict):
+            raise ValueError("texture_config.roles must be an object.")
+        role_configs: dict[str, dict[str, object]] = {}
+        for texture_role, role_config in roles_value.items():
+            if not isinstance(texture_role, str) or not texture_role:
+                raise ValueError("texture_config.roles keys must be non-empty texture roles.")
+            role_configs[texture_role] = self._parse_texture_role_config(
+                role_config, f"texture_config.roles.{texture_role}")
+        return default_config, role_configs
+
+    @staticmethod
+    def _parse_texture_role_config(p_config: object, p_config_name: str) -> dict[str, object]:
+        if not isinstance(p_config, dict):
+            raise ValueError(f"{p_config_name} must be an object.")
+        target_format = p_config.get("target_format")
+        if target_format not in {"rgb", "srgb", "bc5", "bc7", "sbc7"}:
+            raise ValueError(f"{p_config_name}.target_format must be one of rgb, srgb, bc5, bc7, or sbc7.")
+        generate_mipmap = p_config.get("generate_mipmap")
         if not isinstance(generate_mipmap, bool):
-            raise ValueError("texture_config.generate_mipmap must be a boolean.")
+            raise ValueError(f"{p_config_name}.generate_mipmap must be a boolean.")
         return {"target_format": target_format, "generate_mipmap": generate_mipmap}
 
     def _compile_material_textures(
@@ -215,7 +241,8 @@ class WBEUtilsModelCompiler:
         res_output_dir: Path,
         resource_id: str,
         texture_output_dir: str,
-        texture_config: dict[str, object],
+        default_texture_config: dict[str, object],
+        role_texture_configs: dict[str, dict[str, object]],
     ) -> list[ManifestResource]:
         source_dir = source_path.parent
         texture_resources: list[ManifestResource] = []
@@ -251,6 +278,7 @@ class WBEUtilsModelCompiler:
                 source_format = texture.get("source_format", texture.get("color_space"))
                 if source_format not in {"rgb", "srgb"}:
                     raise RuntimeError("Model compiler produced an unsupported texture source format.")
+                texture_config = role_texture_configs.get(texture_role, default_texture_config)
                 target_format = str(texture_config["target_format"])
                 generate_mipmap = bool(texture_config["generate_mipmap"])
                 cache_key = (resolved_file.as_posix(), source_format, target_format, generate_mipmap)

@@ -107,7 +107,12 @@ resource = {
 	"graphics_pipeline_ids": ["main_pipeline"],
 	"masked_graphics_pipeline_ids": ["masked_pipeline"],
 	"texture_output_dir": "textures",
-	"texture_config": {"target_format": "bc7", "generate_mipmap": True},
+	"texture_config": {
+		"default": {"target_format": "bc7", "generate_mipmap": True},
+		"roles": {
+			"normal": {"target_format": "bc5", "generate_mipmap": True},
+		},
+	},
 }
 
 resources = compiler.compile(
@@ -158,8 +163,16 @@ without invoking the native compiler.
 	"masked_graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
 	"texture_config": {
-		"target_format": "rgb" | "srgb" | "bc7" | "sbc7",
-		"generate_mipmap": bool,
+		"default": {
+			"target_format": "rgb" | "srgb" | "bc5" | "bc7" | "sbc7",
+			"generate_mipmap": bool,
+		},
+		"roles": {
+			str: {
+				"target_format": "rgb" | "srgb" | "bc5" | "bc7" | "sbc7",
+				"generate_mipmap": bool,
+			},
+		},
 	},
 	"geometry_output_dir": str,
 	"scale_vertex_pos": float,
@@ -180,7 +193,7 @@ Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids
 
 `type`, `file`, and `texture_config` are required. When `id` is omitted, the source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
-When `texture_output_dir` is provided, the injected texture compiler writes KTX2 textures under `res_output_dir / texture_output_dir`. Generated inputs such as repacked roughness-metallic-ambient-occlusion images are compiled through the same interface.
+When `texture_output_dir` is provided, the injected texture compiler writes KTX2 textures under `res_output_dir / texture_output_dir`. Generated inputs such as repacked roughness-metallic-ambient-occlusion images are compiled through the same interface. Texture-role configuration keys are arbitrary strings. A material texture uses its matching entry under `texture_config.roles`, or `texture_config.default` when no matching entry exists.
 
 ## Mesh Resource Output
 
