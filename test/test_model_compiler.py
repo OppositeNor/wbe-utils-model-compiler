@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import shutil
 import struct
+from threading import Barrier, Lock, get_ident
 import zlib
 
 import pytest
@@ -526,7 +527,7 @@ def test_materials_select_role_texture_config_and_default(
 
     compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
-    assert [(request.target_format, request.generate_mipmap) for request in texture_compiler.requests] == [
+    assert sorted((request.target_format, request.generate_mipmap) for request in texture_compiler.requests) == [
         ("bc5", True),
         ("sbc7", False),
     ]
@@ -557,6 +558,7 @@ def test_geometry_compilation_converts_assimp_uv_origin(
     output_dir = tmp_path / "output"
     if static_geometry:
         resource["source_type"] = "static_geometry"
+        resource["source_files"] = [resource.pop("file")]
         resource["combine_nodes"] = False
         resources = compiler.compile_static_geometry(resource, tmp_path / "manifest.json", tmp_path, output_dir)
         compiled = next(item for item in resources if item["type"] == "static_opaque_set")
@@ -665,14 +667,16 @@ def test_masked_material_falls_back_to_graphics_pipeline(tmp_path: Path) -> None
 
 def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path: Path) -> None:
     compiler = _compiler()
-    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
+    resource = {**_cube_resource(), "source_type": "static_geometry", "source_files": [_cube_resource()["file"]], "combine_nodes": False}
 
     compiled = compiler.compile(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
-    assert compiled[0] == {"id": "cube.geometry", "type": "binary", "path": "cube.geometry.bin"}
-    assert (tmp_path / "cube.geometry.bin").is_file()
-    opaque_set = compiled[1]
-    masked_set = compiled[2]
+    assert compiled[0] == {"id": "cube.vertices", "type": "binary", "path": "cube.vertices.bin"}
+    assert compiled[1] == {"id": "cube.indices", "type": "binary", "path": "cube.indices.bin"}
+    assert (tmp_path / "cube.vertices.bin").is_file()
+    assert (tmp_path / "cube.indices.bin").is_file()
+    opaque_set = compiled[2]
+    masked_set = compiled[3]
     assert opaque_set["id"] == "cube.static_opaque_set"
     assert opaque_set["type"] == "static_opaque_set"
     assert masked_set["id"] == "cube.static_masked_set"
@@ -683,25 +687,25 @@ def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path:
     assert opaque_set["instances"]
     submesh = opaque_set["submeshes"][0]
     assert submesh["material_id"] == "cube.material.Cube"
-    assert submesh["vertices"]["binary"]["binary_id"] == "cube.geometry"
-    assert submesh["indices"]["binary"]["binary_id"] == "cube.geometry"
+    assert submesh["vertices"]["binary"]["binary_id"] == "cube.vertices"
+    assert submesh["indices"]["binary"]["binary_id"] == "cube.indices"
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == len(opaque_set["instances"])
     assert len(opaque_set["instances"][0]["global_transform"]) == 16
-    assert _texture_resources(compiled[3:])
-    assert _material_resources(compiled[3:])
-    assert len(_texture_resources(compiled[3:])) + len(_material_resources(compiled[3:])) == len(compiled[3:])
+    assert _texture_resources(compiled[5:])
+    assert _material_resources(compiled[5:])
+    assert len(_texture_resources(compiled[5:])) + len(_material_resources(compiled[5:])) == len(compiled[5:])
 
 
 def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path) -> None:
     _make_masked_cube(tmp_path)
     compiler = _compiler()
-    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
+    resource = {**_cube_resource(), "source_type": "static_geometry", "source_files": [_cube_resource()["file"]], "combine_nodes": False}
 
     compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
 
-    opaque_set = compiled[1]
-    masked_set = compiled[2]
+    opaque_set = compiled[2]
+    masked_set = compiled[3]
     assert opaque_set["submeshes"] == []
     assert opaque_set["instances"] == []
     assert masked_set["submeshes"]
@@ -712,7 +716,7 @@ def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path)
 def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _make_blend_cube(tmp_path)
     compiler = _compiler()
-    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False}
+    resource = {**_cube_resource(), "source_type": "static_geometry", "source_files": [_cube_resource()["file"]], "combine_nodes": False}
 
     compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
 
@@ -729,7 +733,7 @@ def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsy
 def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) -> None:
     source_path = _make_hierarchical_cube(tmp_path / "source")
     compiler = _compiler()
-    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False, "file": source_path.as_posix()}
+    resource = {**_cube_resource(), "source_type": "static_geometry", "combine_nodes": False, "source_files": [source_path.as_posix()]}
 
     compiled = compiler.compile_static_geometry(resource, source_path.parent / "manifest.json", source_path.parent, tmp_path / "output")
 
@@ -873,7 +877,7 @@ def test_static_geometry_compile_uses_cache_when_inputs_are_unchanged(tmp_path: 
     manifest_path = source_root / "manifest.json"
     output_dir = tmp_path / "output"
     compile_counts = _install_compile_counters(monkeypatch)
-    static_resource = {**resource, "source_type": "static_geometry", "combine_nodes": False}
+    static_resource = {**resource, "source_type": "static_geometry", "source_files": [_cube_resource()["file"]], "combine_nodes": False}
 
     first_result = compiler.compile(static_resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
     second_result = compiler.compile(static_resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
@@ -894,3 +898,202 @@ def test_compile_rebuilds_when_compiler_version_changes(tmp_path: Path, monkeypa
     compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
 
     assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}
+
+
+@pytest.mark.parametrize("second_category", ["opaque", "masked", "opaque_double_sided"])
+def test_static_geometry_stacks_sources(tmp_path: Path, second_category: str) -> None:
+    first = _make_hierarchical_cube(tmp_path / "first")
+    second = _make_hierarchical_cube(tmp_path / "second")
+    second_data = json.loads(second.read_text(encoding="utf-8"))
+    second_data["nodes"][2]["translation"] = [5.0, 0.0, 8.0]
+    if second_category == "masked":
+        second_data["materials"][0]["alphaMode"] = "MASK"
+    if second_category == "opaque_double_sided":
+        second_data["materials"][0]["doubleSided"] = True
+    second.write_text(json.dumps(second_data), encoding="utf-8")
+    resource = {
+        **_cube_resource(), "type": "static_geometry", "combine_nodes": False,
+        "source_files": [str(first), str(second)], "masked_graphics_pipeline_ids": ["masked_pipeline"],
+        "double_sided_graphics_pipeline_ids": ["double_sided_pipeline"],
+    }
+    compiled = _compiler().compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    assert [item["type"] for item in compiled[:4]] == ["binary", "binary", "static_opaque_set", "static_masked_set"]
+    sets = compiled[2:5]
+    submeshes = [submesh for static_set in sets for submesh in static_set["submeshes"]]
+    assert len(submeshes) == 2
+    assert sum(len(static_set["instances"]) for static_set in sets) == 4
+    materials = {item["id"]: item for item in _material_resources(compiled)}
+    assert len(materials) == len(_material_resources(compiled))
+    assert len({submesh["material_id"] for submesh in submeshes}) == 2
+    for index, submesh in enumerate(submeshes):
+        assert submesh["material_id"].startswith(f"cube.source.{index}.material.")
+        assert submesh["material_id"] in materials
+        assert submesh["vertices"]["binary"]["binary_id"] == compiled[0]["id"]
+        assert submesh["indices"]["binary"]["binary_id"] == compiled[1]["id"]
+        assert submesh["instance_count"] == 2
+    assert submeshes[1]["vertices"]["binary"]["start"] > submeshes[0]["vertices"]["binary"]["start"]
+    assert submeshes[1]["indices"]["binary"]["start"] > submeshes[0]["indices"]["binary"]["start"]
+    for static_set in sets:
+        for index, submesh in enumerate(static_set["submeshes"]):
+            assert submesh["first_instance"] == index * 2
+            transform = static_set["instances"][submesh["first_instance"] + 1]["global_transform"]
+            expected = [5.0, 0.0, 8.0] if ".source.1." in submesh["material_id"] else [0.0, 0.0, 4.0]
+            assert transform[12:15] == pytest.approx(expected)
+    assert len(sets[1]["submeshes"]) == int(second_category == "masked")
+    if second_category == "masked":
+        assert materials[submeshes[1]["material_id"]]["graphics_pipeline_ids"] == ["masked_pipeline"]
+    if second_category == "opaque_double_sided":
+        assert materials[submeshes[1]["material_id"]]["graphics_pipeline_ids"] == ["double_sided_pipeline"]
+
+
+@pytest.mark.parametrize("source_files", [None, [], "Cube/glTF/Cube.gltf", [""], [123]])
+def test_static_geometry_requires_source_files(tmp_path: Path, source_files: object) -> None:
+    resource = {**_cube_resource(), "type": "static_geometry", "combine_nodes": False, "source_files": source_files}
+    with pytest.raises(ValueError, match="source_files"):
+        _compiler().compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+
+
+@pytest.mark.parametrize("changed_input", ["model", "buffer", "image", "order"])
+def test_static_geometry_cache_tracks_all_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_input: str
+) -> None:
+    first = _make_hierarchical_cube(tmp_path / "first")
+    second = _make_hierarchical_cube(tmp_path / "second")
+    resource = {
+        **_cube_resource(), "type": "static_geometry", "combine_nodes": False,
+        "source_files": [str(first), str(second)],
+    }
+    compiler = _compiler()
+    counts = _install_compile_counters(monkeypatch)
+    args = (resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    compiler.compile(*args, cache_dir=tmp_path / "cache")
+    compiler.compile(*args, cache_dir=tmp_path / "cache")
+    assert counts == {"mesh": 0, "static_geometry": 1, "materials": 2}
+    if changed_input == "order":
+        resource["source_files"] = [str(second), str(first)]
+    elif changed_input == "model":
+        second.write_text(second.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    else:
+        data = json.loads(second.read_text(encoding="utf-8"))
+        group = "buffers" if changed_input == "buffer" else "images"
+        dependency = second.parent / data[group][0]["uri"]
+        dependency.write_bytes(dependency.read_bytes() + b"\0")
+    compiler.compile(*args, cache_dir=tmp_path / "cache")
+    assert counts == {"mesh": 0, "static_geometry": 2, "materials": 4}
+
+
+def test_texture_pool_runs_jobs_concurrently_with_bounded_workers() -> None:
+    barrier = Barrier(2)
+    lock = Lock()
+    active = 0
+    maximum_active = 0
+    completed: list[int] = []
+    threads: set[int] = set()
+
+    def compile_texture(p_request: int) -> None:
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            threads.add(get_ident())
+        barrier.wait(timeout=5)
+        with lock:
+            completed.append(p_request)
+            active -= 1
+
+    _native.compile_textures(compile_texture, list(range(6)), 2)
+    assert sorted(completed) == list(range(6))
+    assert maximum_active == 2
+    assert len(threads) == 2
+    assert get_ident() not in threads
+
+
+def test_texture_pool_joins_all_jobs_before_propagating_errors() -> None:
+    barrier = Barrier(2)
+    completed: list[int] = []
+
+    def compile_texture(p_request: int) -> None:
+        if p_request < 2:
+            barrier.wait(timeout=5)
+            raise RuntimeError(f"texture {p_request} failed")
+        completed.append(p_request)
+
+    with pytest.raises(RuntimeError, match="texture 0 failed"):
+        _native.compile_textures(compile_texture, list(range(4)), 2)
+    assert sorted(completed) == [2, 3]
+
+
+@pytest.mark.parametrize("worker_count", [0, -1, 1.5])
+def test_texture_worker_count_must_be_positive_integer(worker_count: object) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        WBEUtilsModelCompiler(RecordingTextureCompiler(), texture_worker_count=worker_count)
+
+
+def test_parallel_texture_compilation_preserves_output_and_deduplicates_requests(tmp_path: Path) -> None:
+    source = _write_standalone_pbr_obj(tmp_path / "source")
+    resource = {**_cube_resource(), "file": str(source)}
+    recorder = RecordingTextureCompiler()
+    compiler = WBEUtilsModelCompiler(recorder, texture_worker_count=2)
+    arguments = (resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    parallel = compiler.compile_materials(*arguments)
+    serial = WBEUtilsModelCompiler(RecordingTextureCompiler(), texture_worker_count=1).compile_materials(*arguments)
+    assert parallel == serial
+    assert len(recorder.requests) == len({request.destination_path for request in recorder.requests})
+    assert all(request.thread_count >= 1 for request in recorder.requests)
+
+
+@pytest.mark.parametrize(
+    ("alpha_mode", "double_sided", "override", "expected"),
+    [
+        ("OPAQUE", True, ["double_sided_pipeline"], ["double_sided_pipeline"]),
+        ("OPAQUE", False, ["double_sided_pipeline"], ["main_pipeline"]),
+        ("OPAQUE", True, [], ["main_pipeline"]),
+        ("MASK", True, ["double_sided_pipeline"], ["masked_pipeline"]),
+        ("BLEND", True, ["double_sided_pipeline"], ["main_pipeline"]),
+    ],
+)
+def test_double_sided_material_pipeline_selection(
+    tmp_path: Path, alpha_mode: str, double_sided: bool, override: list[str], expected: list[str]
+) -> None:
+    source = _make_masked_cube(tmp_path)
+    data = json.loads(source.read_text(encoding="utf-8"))
+    data["materials"][0]["alphaMode"] = alpha_mode
+    data["materials"][0]["doubleSided"] = double_sided
+    source.write_text(json.dumps(data), encoding="utf-8")
+    resource = {
+        **_cube_resource(),
+        "masked_graphics_pipeline_ids": ["masked_pipeline"],
+        "double_sided_graphics_pipeline_ids": override,
+    }
+    compiled = _compiler().compile_materials(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    material = next(item for item in _material_resources(compiled) if item["id"] == "cube.material.Cube")
+    assert material["graphics_pipeline_ids"] == expected
+
+
+@pytest.mark.parametrize("alpha_mode,double_sided,category", [
+    ("OPAQUE", True, "static_opaque_double_sided_set"),
+    ("OPAQUE", False, "static_opaque_set"),
+    ("MASK", True, "static_masked_set"),
+    ("BLEND", True, None),
+])
+def test_static_geometry_partitions_double_sided_materials(
+    tmp_path: Path, alpha_mode: str, double_sided: bool, category: str | None
+) -> None:
+    _make_masked_cube(tmp_path)
+    source = tmp_path / _cube_resource()["file"]
+    document = json.loads(source.read_text())
+    for material in document["materials"]:
+        material["alphaMode"] = alpha_mode
+        material["doubleSided"] = double_sided
+    source.write_text(json.dumps(document))
+    resource = {**_cube_resource(), "source_type": "static_geometry", "source_files": [str(source)], "combine_nodes": False}
+    compiled = _compiler().compile_static_geometry(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
+    assert [item["type"] for item in compiled[2:]] == [
+        "static_opaque_set", "static_masked_set", "static_opaque_double_sided_set"
+    ]
+    for static_set in compiled[2:]:
+        assert bool(static_set["submeshes"]) == (static_set["type"] == category)
+        assert bool(static_set["instances"]) == (static_set["type"] == category)
+        for submesh in static_set["submeshes"]:
+            assert submesh["first_instance"] + submesh["instance_count"] <= len(static_set["instances"])
+            assert submesh["vertices"]["binary"]["binary_id"] == "cube.vertices"

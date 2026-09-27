@@ -62,8 +62,9 @@ pybind11_add_module(_native
     src/python_module.cpp
 )
 
-target_include_directories(_native PRIVATE include "${WBE_DEPENDENCIES_ROOT}/stb")
-target_link_libraries(_native PRIVATE ${WBE_ASSIMP_TARGET})
+find_package(Threads REQUIRED)
+target_include_directories(_native PRIVATE include "${WBE_DEPENDENCIES_ROOT}/stb" "${WBE_DEPENDENCIES_ROOT}/thread-pool/include")
+target_link_libraries(_native PRIVATE ${WBE_ASSIMP_TARGET} Threads::Threads)
 
 set_target_properties(_native PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${PYTHON_EXTENSION_OUTPUT_DIRECTORY}"

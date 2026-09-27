@@ -97,6 +97,7 @@ class TextureCompiler:
 compiler = WBEUtilsModelCompiler(
 	texture_compiler=TextureCompiler(),
 	cache_dir=Path("build/debug/build_cache/model_compiler"),
+	texture_worker_count=4,
 )
 
 resource = {
@@ -106,6 +107,7 @@ resource = {
 	"combine_nodes": True,
 	"graphics_pipeline_ids": ["main_pipeline"],
 	"masked_graphics_pipeline_ids": ["masked_pipeline"],
+	"double_sided_graphics_pipeline_ids": ["opaque_double_sided_pipeline"],
 	"texture_output_dir": "textures",
 	"texture_config": {
 		"default": {"target_format": "bc7", "generate_mipmap": True},
@@ -138,12 +140,19 @@ material_resources = compiler.compile_materials(
 ```
 
 `compile` returns mesh or static-geometry resources first, followed by material resources. Ordinary models emit a mesh resource
-and one binary resource before materials. Static geometry emits one binary resource, one `static_opaque_set`, and one
-`static_masked_set` before materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
+and one binary resource before materials. Static geometry emits vertex and index binary resources, one `static_opaque_set`, one
+`static_masked_set`, and one `static_opaque_double_sided_set` before materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
 remain available when only one output category is needed.
 
+Texture conversion uses the existing `BS::thread_pool` dependency. `texture_worker_count` defaults to at most four workers,
+limited by CPU count; set it to `1` to serialize conversions or reduce peak memory for very large images. Host
+`TextureCompiler.compile_texture` implementations must support concurrent calls for distinct destination paths and should honor
+`TextureCompileRequest.thread_count`, which divides the CPU budget among workers (at most 16 encoder threads per job).
+Only deduplicated conversion requests run concurrently; resource ordering remains deterministic. Every batch joins all jobs before
+returning, and conversion errors propagate to the caller without writing a successful model cache entry.
+
 When `cache_dir` is provided, the compiler writes one JSON cache record per resolved resource. The cache key includes the resolved
-resource declaration, manifest and output roots, and source path. On a later call, the wrapper hashes the resource declaration,
+resource declaration, manifest and output roots, and ordered source paths. On a later call, the wrapper hashes the resource declaration,
 the source file, and any cached dependent source files such as glTF buffers/images or OBJ/MTL texture references. If none of those
 hashes changed and all previously emitted output files still exist, the wrapper returns the cached compiled resource dictionaries
 without invoking the native compiler.
@@ -157,10 +166,12 @@ without invoking the native compiler.
 {
 	"id": str,
 	"type": "model" | "static_geometry",
-	"file": str,
+	"file": str,  # model only
+	"source_files": list[str],  # static_geometry only
 	"combine_nodes": bool,
 	"graphics_pipeline_ids": list[str],
 	"masked_graphics_pipeline_ids": list[str],
+	"double_sided_graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
 	"texture_config": {
 		"default": {
@@ -191,7 +202,9 @@ without invoking the native compiler.
 
 Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
-`type`, `file`, and `texture_config` are required. When `id` is omitted, the source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
+Opaque materials with glTF `doubleSided: true` use `double_sided_graphics_pipeline_ids` (falling back to `graphics_pipeline_ids` when absent or empty). Their primitives always go into `static_opaque_double_sided_set`, independently of pipeline overrides. Missing `doubleSided` defaults to false. Masked materials remain in `static_masked_set`; BLEND primitives remain omitted. All three sets share the same vertex/index binaries, with independent instance ranges. Renderers must draw the double-sided category with face culling disabled and reverse lighting normals on back faces.
+
+`type` and `texture_config` are required. Models require `file`; static geometry requires a non-empty `source_files` array of strings. Static sources are stacked in their original coordinate systems into opaque, masked, and opaque double-sided sets sharing vertex and index binaries. Each source preserves its node transforms and receives distinct material/submesh IDs when multiple sources are supplied. When `id` is omitted, the first source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
 When `texture_output_dir` is provided, the injected texture compiler writes KTX2 textures under `res_output_dir / texture_output_dir`. Generated inputs such as repacked roughness-metallic-ambient-occlusion images are compiled through the same interface. Texture-role configuration keys are arbitrary strings. A material texture uses its matching entry under `texture_config.roles`, or `texture_config.default` when no matching entry exists.
 
@@ -238,6 +251,7 @@ Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex
 	{"id": "<id>.geometry", "type": "binary", "path": str},
 	{"id": "<id>.static_opaque_set", "type": "static_opaque_set", "submeshes": list[dict], "instances": list[dict]},
 	{"id": "<id>.static_masked_set", "type": "static_masked_set", "submeshes": list[dict], "instances": list[dict]},
+	{"id": "<id>.static_opaque_double_sided_set", "type": "static_opaque_double_sided_set", "submeshes": list[dict], "instances": list[dict]},
 ]
 ```
 

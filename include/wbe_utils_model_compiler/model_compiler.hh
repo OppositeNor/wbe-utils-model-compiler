@@ -17,6 +17,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <pybind11/pybind11.h>
 
@@ -64,9 +65,13 @@ public:
         bool p_combine_nodes = false,
         bool p_flip_v = false) const;
 
-    /** Compile model source as node-preserving static geometry set resources. */
+    /**
+     * @brief Stack model sources into shared static geometry sets, preserving each node's transform.
+     * @param p_source_paths Non-empty ordered source list. Multiple sources receive distinct ID prefixes.
+     * @throws std::runtime_error If the source list is empty or a model cannot be loaded.
+     */
     pybind11::list compile_static_geometry(
-        const std::filesystem::path& p_source_path,
+        const std::vector<std::filesystem::path>& p_source_paths,
         const std::string& p_resource_id,
         const std::string& p_texture_output_dir,
         const std::filesystem::path& p_geometry_output_dir,
@@ -80,14 +85,29 @@ public:
         const std::string& p_target_front_direction = "z",
         bool p_flip_v = false) const;
 
-    /** Compile source materials into White Bird Engine material resource dictionaries. */
+    /**
+     * @brief Run independent texture requests on a bounded thread pool and join every job before returning.
+     * @param p_compile_texture Thread-safe Python callback; expensive native work should release the GIL.
+     * @param p_requests Requests with distinct destination paths, retained until every job finishes.
+     * @param p_worker_count Positive maximum number of concurrent callbacks.
+     * @throws std::runtime_error If the worker count is zero. Callback errors propagate after all jobs finish.
+     */
+    void compile_textures(const pybind11::function& p_compile_texture,
+        const pybind11::list& p_requests,
+        unsigned int p_worker_count) const;
+
+    /**
+     * @brief Compile source materials with optional masked and opaque double-sided pipeline overrides.
+     * @param p_double_sided_graphics_pipeline_ids Pipelines for opaque two-sided materials; empty uses the ordinary pipelines.
+     */
     pybind11::list compile_materials(
         const std::filesystem::path& p_source_path,
         const std::string& p_resource_id,
         const pybind11::list& p_graphics_pipeline_ids,
         const pybind11::list& p_masked_graphics_pipeline_ids,
         const std::string& p_texture_output_dir,
-        const std::filesystem::path& p_texture_output_root) const;
+        const std::filesystem::path& p_texture_output_root,
+        const pybind11::list& p_double_sided_graphics_pipeline_ids = pybind11::list()) const;
 };
 }
 

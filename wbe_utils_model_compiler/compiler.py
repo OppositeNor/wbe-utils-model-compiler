@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 from typing import Any
@@ -28,7 +29,16 @@ ManifestResource = dict[str, Any]
 
 
 class WBEUtilsModelCompiler:
-    def __init__(self, texture_compiler: TextureCompiler, cache_dir: Path | None = None) -> None:
+    def __init__(
+        self, texture_compiler: TextureCompiler, cache_dir: Path | None = None, texture_worker_count: int | None = None
+    ) -> None:
+        cpu_count = os.cpu_count() or 1
+        if texture_worker_count is None:
+            texture_worker_count = min(4, cpu_count)
+        if not isinstance(texture_worker_count, int) or texture_worker_count < 1:
+            raise ValueError("texture_worker_count must be a positive integer.")
+        self._texture_worker_count = texture_worker_count
+        self._texture_thread_count = max(1, min(16, cpu_count // texture_worker_count))
         self._texture_compiler = texture_compiler
         self._cache_dir = cache_dir
 
@@ -37,7 +47,7 @@ class WBEUtilsModelCompiler:
         return ["model", "static_geometry"]
 
     def _get_cache_version(self) -> str:
-        return f"{__version__}:top-left-uv-v1"
+        return f"{__version__}:double-sided-static-v1"
 
     def compile(
         self,
@@ -51,7 +61,7 @@ class WBEUtilsModelCompiler:
         if active_cache_dir is None:
             return self._compile_all_outputs(resource, manifest_path, res_dir, res_output_dir)
 
-        resolved_source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
+        resolved_source_path = self._resolve_resource_paths(resource, manifest_path, res_dir)[0]
         cache_record_path = self._cache_record_path(
             active_cache_dir, resource, manifest_path, res_dir, res_output_dir, resolved_source_path)
         cached_resources = self._load_cached_resources_if_valid(
@@ -142,11 +152,11 @@ class WBEUtilsModelCompiler:
         if bool(resource.get("combine_nodes", False)):
             raise ValueError("static_geometry preserves nodes as instances and does not support combine_nodes.")
 
-        source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
+        source_paths = self._resolve_resource_paths(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
         geometry_output_dir, geometry_path_prefix = self._resolve_geometry_output(resource, manifest_path, res_dir, res_output_dir)
         texture_output_dir = str(resource.get("texture_output_dir", ""))
-        resource_id = str(resource.get("id", source_path.stem))
+        resource_id = str(resource.get("id", source_paths[0].stem))
         flip_v = resource.get("flip_v", False)
         if not isinstance(flip_v, bool):
             raise ValueError("Model flip_v must be a boolean.")
@@ -154,7 +164,7 @@ class WBEUtilsModelCompiler:
         source_up, source_right, source_front = self._resolve_coordinate_space(resource, "source_space")
         target_up, target_right, target_front = self._resolve_coordinate_space(resource, "target_space")
         compiled_resources = _native.compile_static_geometry(
-            str(source_path),
+            [str(path) for path in source_paths],
             resource_id,
             texture_output_dir,
             str(geometry_output_dir),
@@ -168,7 +178,7 @@ class WBEUtilsModelCompiler:
             target_front,
             flip_v,
         )
-        if not isinstance(compiled_resources, list) or len(compiled_resources) != 4:
+        if not isinstance(compiled_resources, list) or len(compiled_resources) != 5:
             raise RuntimeError("Model compiler produced invalid static geometry resources.")
         return compiled_resources
 
@@ -181,27 +191,35 @@ class WBEUtilsModelCompiler:
         cache_dir: Path | None = None,
     ) -> list[ManifestResource]:
         del cache_dir
-        # Compile material metadata separately from mesh geometry.
-        source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
+        source_paths = self._resolve_resource_paths(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
         texture_output_dir = str(resource.get("texture_output_dir", ""))
-        resource_id = str(resource.get("id", source_path.stem))
+        resource_id = str(resource.get("id", source_paths[0].stem))
         graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
         masked_graphics_pipeline_ids = list(resource.get("masked_graphics_pipeline_ids", []))
-        material_resources = _native.compile_materials(
-            str(source_path), resource_id, graphics_pipeline_ids, masked_graphics_pipeline_ids, texture_output_dir, str(res_output_dir)
-        )
+        double_sided_graphics_pipeline_ids = list(resource.get("double_sided_graphics_pipeline_ids", []))
         default_texture_config, role_texture_configs = self._parse_texture_config(resource)
-        texture_resources = self._compile_material_textures(
-            material_resources,
-            source_path,
-            res_output_dir,
-            resource_id,
-            texture_output_dir,
-            default_texture_config,
-            role_texture_configs,
-        )
-        return [*texture_resources, *material_resources]
+        compiled_resources: list[ManifestResource] = []
+        for source_index, source_path in enumerate(source_paths):
+            source_id = resource_id if len(source_paths) == 1 else f"{resource_id}.source.{source_index}"
+            source_texture_output_dir = texture_output_dir
+            if len(source_paths) > 1:
+                source_texture_output_dir = (Path(texture_output_dir or "textures") / source_id).as_posix()
+            material_resources = _native.compile_materials(
+                str(source_path), source_id, graphics_pipeline_ids, masked_graphics_pipeline_ids,
+                source_texture_output_dir, str(res_output_dir), double_sided_graphics_pipeline_ids
+            )
+            texture_resources = self._compile_material_textures(
+                material_resources,
+                source_path,
+                res_output_dir,
+                source_id,
+                texture_output_dir,
+                default_texture_config,
+                role_texture_configs,
+            )
+            compiled_resources.extend([*texture_resources, *material_resources])
+        return compiled_resources
 
     def _parse_texture_config(
         self, resource: ManifestResource
@@ -247,6 +265,7 @@ class WBEUtilsModelCompiler:
         source_dir = source_path.parent
         texture_resources: list[ManifestResource] = []
         compiled_texture_ids: dict[tuple[str, str, str, bool], str] = {}
+        requests: list[TextureCompileRequest] = []
         for material_resource in material_resources:
             textures = material_resource.get("textures", [])
             if not isinstance(textures, list):
@@ -290,12 +309,13 @@ class WBEUtilsModelCompiler:
                     output_directory = Path(texture_output_dir) if texture_output_dir else Path("textures")
                     relative_output_path = output_directory / f"{source_name}_{digest}.ktx2"
                     destination_path = (res_output_dir / relative_output_path).resolve()
-                    self._texture_compiler.compile_texture(TextureCompileRequest(
+                    requests.append(TextureCompileRequest(
                         source_path=resolved_file,
                         destination_path=destination_path,
                         source_format=source_format,
                         target_format=target_format,
                         generate_mipmap=generate_mipmap,
+                        thread_count=self._texture_thread_count,
                     ))
                     texture_resources.append({
                         "id": texture_id,
@@ -305,6 +325,7 @@ class WBEUtilsModelCompiler:
                     compiled_texture_ids[cache_key] = texture_id
                 texture_binding.pop("texture", None)
                 texture_binding["texture_id"] = texture_id
+        _native.compile_textures(self._texture_compiler.compile_texture, requests, self._texture_worker_count)
         return texture_resources
 
     def _resolve_geometry_output(
@@ -344,6 +365,15 @@ class WBEUtilsModelCompiler:
             raise ValueError(f"{key} must be a dictionary.")
         return str(space.get("up", "y")), str(space.get("right", "x")), str(space.get("front", "z"))
 
+    def _resolve_resource_paths(self, resource: ManifestResource, manifest_path: Path, res_dir: Path) -> list[Path]:
+        if resource.get("source_type", resource.get("type")) != "static_geometry":
+            return [self._resolve_resource_path(resource, manifest_path, res_dir)]
+        source_files = resource.get("source_files")
+        if (not isinstance(source_files, list) or not source_files
+                or any(not isinstance(path, str) or not path for path in source_files)):
+            raise ValueError("Static geometry requires a non-empty source_files array of strings.")
+        return [self._resolve_resource_path({"file": path}, manifest_path, res_dir) for path in source_files]
+
     def _resolve_resource_path(self, resource: ManifestResource, manifest_path: Path, res_dir: Path) -> Path:
         # Try both resource-root-relative and manifest-relative lookups for source files.
         raw_path = Path(str(resource["file"]))
@@ -367,7 +397,7 @@ class WBEUtilsModelCompiler:
     ) -> list[ManifestResource]:
         if resource.get("source_type", resource.get("type")) == "static_geometry":
             static_resources = self.compile_static_geometry(resource, manifest_path, res_dir, res_output_dir)
-            material_resources = self.compile_materials({**resource, "type": "model"}, manifest_path, res_dir, res_output_dir)
+            material_resources = self.compile_materials(resource, manifest_path, res_dir, res_output_dir)
             return [*static_resources, *material_resources]
         mesh_resources = self._compile_mesh_resources(resource, manifest_path, res_dir, res_output_dir)
         material_resources = self.compile_materials(resource, manifest_path, res_dir, res_output_dir)
@@ -448,7 +478,10 @@ class WBEUtilsModelCompiler:
         resolved_source_path: Path,
         compiled_resources: list[ManifestResource],
     ) -> None:
-        dependency_paths = self._collect_source_dependencies(resolved_source_path)
+        dependency_paths: set[Path] = set()
+        for source_path in self._resolve_resource_paths(resource, manifest_path, res_dir):
+            dependency_paths.add(source_path)
+            dependency_paths.update(self._collect_source_dependencies(source_path))
         dependency_hashes: dict[str, str] = {}
         for dependency_path in sorted(dependency_paths):
             dependency_hashes[dependency_path.as_posix()] = self._hash_file(dependency_path)
@@ -475,7 +508,7 @@ class WBEUtilsModelCompiler:
             "manifest_path": manifest_path.resolve().as_posix(),
             "res_dir": res_dir.resolve().as_posix(),
             "res_output_dir": res_output_dir.resolve().as_posix(),
-            "resolved_source_path": resolved_source_path.as_posix(),
+            "resolved_source_paths": [path.as_posix() for path in self._resolve_resource_paths(resource, manifest_path, res_dir)],
             "geometry_output_dir": geometry_output_dir.resolve().as_posix(),
             "geometry_path_prefix": geometry_path_prefix,
         }

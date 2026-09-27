@@ -18,6 +18,8 @@
 #include <string>
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl/filesystem.h>
 
 namespace py = pybind11;
 
@@ -77,7 +79,7 @@ PYBIND11_MODULE(_native, p_module)
 
     p_module.def(
         "compile_static_geometry",
-        [](const std::string& p_source_path,
+        [](const std::vector<std::filesystem::path>& p_source_paths,
            const std::string& p_resource_id,
            const std::string& p_texture_output_dir,
            const std::string& p_geometry_output_dir,
@@ -91,7 +93,7 @@ PYBIND11_MODULE(_native, p_module)
            const std::string& p_target_front_direction,
            bool p_flip_v) -> py::list {
             const wbe::model_compiler::ModelCompiler compiler;
-            return compiler.compile_static_geometry(std::filesystem::path(p_source_path),
+            return compiler.compile_static_geometry(p_source_paths,
                 p_resource_id,
                 p_texture_output_dir,
                 std::filesystem::path(p_geometry_output_dir),
@@ -105,7 +107,7 @@ PYBIND11_MODULE(_native, p_module)
                 p_target_front_direction,
                 p_flip_v);
         },
-        py::arg("source_path"),
+        py::arg("source_paths"),
         py::arg("resource_id"),
         py::arg("texture_output_dir"),
         py::arg("geometry_output_dir"),
@@ -120,25 +122,38 @@ PYBIND11_MODULE(_native, p_module)
         py::arg("flip_v") = false);
 
     p_module.def(
+        "compile_textures",
+        [](const py::function& p_compile_texture, const py::list& p_requests, unsigned int p_worker_count) {
+            const wbe::model_compiler::ModelCompiler compiler;
+            compiler.compile_textures(p_compile_texture, p_requests, p_worker_count);
+        },
+        py::arg("compile_texture"),
+        py::arg("requests"),
+        py::arg("worker_count"));
+
+    p_module.def(
         "compile_materials",
         [](const std::string& p_source_path,
            const std::string& p_resource_id,
            const py::list& p_graphics_pipeline_ids,
            const py::list& p_masked_graphics_pipeline_ids,
            const std::string& p_texture_output_dir,
-           const std::string& p_texture_output_root) -> py::list {
+           const std::string& p_texture_output_root,
+           const py::list& p_double_sided_graphics_pipeline_ids) -> py::list {
             const wbe::model_compiler::ModelCompiler compiler;
             return compiler.compile_materials(std::filesystem::path(p_source_path),
                 p_resource_id,
                 p_graphics_pipeline_ids,
                 p_masked_graphics_pipeline_ids,
                 p_texture_output_dir,
-                std::filesystem::path(p_texture_output_root));
+                std::filesystem::path(p_texture_output_root),
+                p_double_sided_graphics_pipeline_ids);
         },
         py::arg("source_path"),
         py::arg("resource_id"),
         py::arg("graphics_pipeline_ids"),
         py::arg("masked_graphics_pipeline_ids"),
         py::arg("texture_output_dir"),
-        py::arg("texture_output_root") = "");
+        py::arg("texture_output_root") = "",
+        py::arg("double_sided_graphics_pipeline_ids") = py::list());
 }

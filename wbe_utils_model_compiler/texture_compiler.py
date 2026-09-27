@@ -20,7 +20,7 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(frozen=True)
 class TextureCompileRequest:
-    """One implementation-independent request to compile a sampled texture."""
+    """One sampled-texture conversion; thread_count bounds internal encoder parallelism when specified."""
 
     source_path: Path
     destination_path: Path
@@ -29,6 +29,7 @@ class TextureCompileRequest:
     generate_mipmap: bool
     flip_h: bool = False
     flip_v: bool = False
+    thread_count: int | None = None
 
 
 @runtime_checkable
@@ -36,5 +37,5 @@ class TextureCompiler(Protocol):
     """Interface implemented by the host asset-conditioning pipeline."""
 
     def compile_texture(self, p_request: TextureCompileRequest) -> None:
-        """Compile one source image into the requested runtime texture."""
+        """Compile one texture. Calls may overlap for distinct destinations; honor thread_count when provided."""
 

@@ -21,11 +21,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <BS_thread_pool.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/GltfMaterial.h>
 #include <assimp/material.h>
@@ -81,6 +83,7 @@ struct IntermediateMaterial
     std::vector<IntermediateMaterialTexture> textures;
     std::string alpha_mode = "OPAQUE";
     bool masked = false;
+    bool double_sided = false;
 };
 
 struct IntermediateScene
@@ -803,6 +806,9 @@ IntermediateMaterial import_material(
         result.alpha_mode = alpha_mode.C_Str();
     }
     result.masked = result.alpha_mode == "MASK";
+    int double_sided = 0;
+    p_material->Get(AI_MATKEY_TWOSIDED, double_sided);
+    result.double_sided = double_sided != 0;
 
     if (!add_texture(
             p_source_directory, p_material, aiTextureType_BASE_COLOR, "albedo", "srgb", 4, p_texture_output_dir, p_texture_output_root, result.textures))
@@ -1299,6 +1305,8 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
 
     py::list opaque_submeshes;
     py::list opaque_instances;
+    py::list double_sided_submeshes;
+    py::list double_sided_instances;
     py::list masked_submeshes;
     py::list masked_instances;
     bool warned_blend = false;
@@ -1318,8 +1326,9 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
             continue;
         }
         const bool is_masked = material != p_scene.materials.end() && material->masked;
-        py::list& target_submeshes = is_masked ? masked_submeshes : opaque_submeshes;
-        py::list& target_instances = is_masked ? masked_instances : opaque_instances;
+        const bool is_double_sided = material != p_scene.materials.end() && material->double_sided;
+        py::list& target_submeshes = is_masked ? masked_submeshes : (is_double_sided ? double_sided_submeshes : opaque_submeshes);
+        py::list& target_instances = is_masked ? masked_instances : (is_double_sided ? double_sided_instances : opaque_instances);
         const size_t first_instance = target_instances.size();
         for (const StaticGeometryPlacement& placement : p_scene.placements_by_mesh[mesh_index])
         {
@@ -1333,6 +1342,7 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
     result.append(binary_to_python(index_binary_id, geometry_path_for(index_file_name, p_geometry_path_prefix)));
     result.append(make_static_geometry_set(p_resource_id + ".static_opaque_set", "static_opaque_set", opaque_submeshes, opaque_instances));
     result.append(make_static_geometry_set(p_resource_id + ".static_masked_set", "static_masked_set", masked_submeshes, masked_instances));
+    result.append(make_static_geometry_set(p_resource_id + ".static_opaque_double_sided_set", "static_opaque_double_sided_set", double_sided_submeshes, double_sided_instances));
     return result;
 }
 
@@ -1351,15 +1361,22 @@ py::dict to_python(const IntermediateMaterialTexture& p_texture)
 
 py::dict material_to_python(const IntermediateMaterial& p_material,
     const py::list& p_graphics_pipeline_ids,
-    const py::list& p_masked_graphics_pipeline_ids)
+    const py::list& p_masked_graphics_pipeline_ids,
+    const py::list& p_double_sided_graphics_pipeline_ids)
 {
     py::dict result;
     result["id"] = p_material.id;
     result["type"] = "material";
-    const py::list& graphics_pipeline_ids = p_material.masked && p_masked_graphics_pipeline_ids.size() > 0
-                                                ? p_masked_graphics_pipeline_ids
-                                                : p_graphics_pipeline_ids;
-    result["graphics_pipeline_ids"] = pipeline_ids_from(graphics_pipeline_ids);
+    const py::list* graphics_pipeline_ids = &p_graphics_pipeline_ids;
+    if (p_material.masked && p_masked_graphics_pipeline_ids.size() > 0)
+    {
+        graphics_pipeline_ids = &p_masked_graphics_pipeline_ids;
+    }
+    else if (p_material.alpha_mode == "OPAQUE" && p_material.double_sided && p_double_sided_graphics_pipeline_ids.size() > 0)
+    {
+        graphics_pipeline_ids = &p_double_sided_graphics_pipeline_ids;
+    }
+    result["graphics_pipeline_ids"] = pipeline_ids_from(*graphics_pipeline_ids);
 
     py::list textures;
     for (const IntermediateMaterialTexture& texture : p_material.textures)
@@ -1408,7 +1425,7 @@ py::list ModelCompiler::compile_mesh(
 }
 
 py::list ModelCompiler::compile_static_geometry(
-    const std::filesystem::path& p_source_path,
+    const std::vector<std::filesystem::path>& p_source_paths,
     const std::string& p_resource_id,
     const std::string& p_texture_output_dir,
     const std::filesystem::path& p_geometry_output_dir,
@@ -1429,8 +1446,71 @@ py::list ModelCompiler::compile_static_geometry(
         p_target_up_direction,
         p_target_right_direction,
         p_target_front_direction);
-    const StaticGeometryScene scene = import_static_geometry_scene(p_source_path, p_resource_id, p_texture_output_dir, transform, {}, p_flip_v);
+    if (p_source_paths.empty())
+    {
+        throw std::runtime_error("Static geometry requires at least one source model.");
+    }
+    StaticGeometryScene scene;
+    for (size_t source_index = 0; source_index < p_source_paths.size(); ++source_index)
+    {
+        const std::string source_id = p_source_paths.size() == 1
+                                          ? p_resource_id
+                                          : p_resource_id + ".source." + std::to_string(source_index);
+        StaticGeometryScene source_scene = import_static_geometry_scene(
+            p_source_paths[source_index], source_id, p_texture_output_dir, transform, {}, p_flip_v);
+        const size_t mesh_offset = scene.submeshes.size();
+        for (auto& placements : source_scene.placements_by_mesh)
+        {
+            for (StaticGeometryPlacement& placement : placements)
+            {
+                placement.mesh_index += static_cast<unsigned int>(mesh_offset);
+            }
+            scene.placements_by_mesh.push_back(std::move(placements));
+        }
+        for (IntermediateSubmesh& submesh : source_scene.submeshes)
+        {
+            scene.submeshes.push_back(std::move(submesh));
+        }
+        for (IntermediateMaterial& material : source_scene.materials)
+        {
+            scene.materials.push_back(std::move(material));
+        }
+    }
     return static_geometry_resources_to_python(scene, p_resource_id, p_geometry_output_dir, p_geometry_path_prefix);
+}
+
+void ModelCompiler::compile_textures(const py::function& p_compile_texture,
+    const py::list& p_requests,
+    unsigned int p_worker_count) const
+{
+    if (p_worker_count == 0)
+    {
+        throw std::runtime_error("Texture worker count must be positive.");
+    }
+    const size_t request_count = p_requests.size();
+    if (request_count == 0)
+    {
+        return;
+    }
+    std::vector<std::future<void>> futures;
+    futures.reserve(request_count);
+    {
+        // Join and destroy the pool before reacquiring the GIL, including during stack unwinding.
+        const py::gil_scoped_release release;
+        BS::thread_pool pool(static_cast<unsigned int>(std::min<size_t>(p_worker_count, request_count)));
+        for (size_t request_index = 0; request_index < request_count; ++request_index)
+        {
+            futures.push_back(pool.submit_task([&p_compile_texture, &p_requests, request_index]() {
+                const py::gil_scoped_acquire acquire;
+                p_compile_texture(p_requests[request_index]);
+            }));
+        }
+    }
+    // Observe exceptions and destroy their Python state while holding the GIL.
+    for (std::future<void>& future : futures)
+    {
+        future.get();
+    }
 }
 
 py::list ModelCompiler::compile_materials(
@@ -1439,7 +1519,8 @@ py::list ModelCompiler::compile_materials(
     const py::list& p_graphics_pipeline_ids,
     const py::list& p_masked_graphics_pipeline_ids,
     const std::string& p_texture_output_dir,
-    const std::filesystem::path& p_texture_output_root) const
+    const std::filesystem::path& p_texture_output_root,
+    const py::list& p_double_sided_graphics_pipeline_ids) const
 {
     const IntermediateScene scene = import_scene(
         p_source_path,
@@ -1451,7 +1532,7 @@ py::list ModelCompiler::compile_materials(
     py::list result;
     for (const IntermediateMaterial& material : scene.materials)
     {
-        result.append(material_to_python(material, p_graphics_pipeline_ids, p_masked_graphics_pipeline_ids));
+        result.append(material_to_python(material, p_graphics_pipeline_ids, p_masked_graphics_pipeline_ids, p_double_sided_graphics_pipeline_ids));
     }
     return result;
 }
