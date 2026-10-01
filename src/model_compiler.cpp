@@ -1175,17 +1175,6 @@ py::dict write_static_submesh_geometry(const IntermediateSubmesh& p_submesh,
     return result;
 }
 
-py::dict to_python(const IntermediateSubmesh& p_submesh, const py::dict& p_geometry_views)
-{
-    py::dict result;
-    result["id"] = p_submesh.id;
-    result["type"] = "submesh";
-    result["vertices"] = p_geometry_views["vertices"];
-    result["indices"] = p_geometry_views["indices"];
-    result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
-    return result;
-}
-
 py::dict binary_to_python(const std::string& p_binary_id, const std::string& p_geometry_path)
 {
     py::dict result;
@@ -1193,6 +1182,101 @@ py::dict binary_to_python(const std::string& p_binary_id, const std::string& p_g
     result["type"] = "binary";
     result["path"] = p_geometry_path;
     return result;
+}
+
+enum class MeshCategory
+{
+    OPAQUE,
+    MASKED,
+    DOUBLE_SIDED_OPAQUE,
+    OMITTED,
+};
+
+MeshCategory classify_submesh(const IntermediateSubmesh& p_submesh, const std::vector<IntermediateMaterial>& p_materials, bool& p_warned_blend)
+{
+    const auto material = std::ranges::find_if(p_materials, [&p_submesh](const IntermediateMaterial& p_material) {
+        return p_submesh.has_material && p_material.id == p_submesh.material_id;
+    });
+    if (material == p_materials.end())
+    {
+        return MeshCategory::OPAQUE;
+    }
+    if (material->alpha_mode == "BLEND")
+    {
+        if (!p_warned_blend)
+        {
+            py::print("WBEUtilsModelCompiler: warning: meshes omit BLEND primitives; transparent meshes are not implemented yet.");
+            p_warned_blend = true;
+        }
+        return MeshCategory::OMITTED;
+    }
+    if (material->masked)
+    {
+        return MeshCategory::MASKED;
+    }
+    return material->double_sided ? MeshCategory::DOUBLE_SIDED_OPAQUE : MeshCategory::OPAQUE;
+}
+
+py::dict make_mesh_instance(const std::array<float, 16>& p_global_transform)
+{
+    py::dict result;
+    py::list transform;
+    for (float value : p_global_transform)
+    {
+        transform.append(value);
+    }
+    result["global_transform"] = transform;
+    return result;
+}
+
+py::dict make_mesh_submesh(
+    const IntermediateSubmesh& p_submesh, const py::dict& p_geometry_views, size_t p_first_instance, size_t p_instance_count)
+{
+    py::dict result;
+    result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
+    result["vertices"] = p_geometry_views["vertices"];
+    result["indices"] = p_geometry_views["indices"];
+    result["first_instance"] = p_first_instance;
+    result["instance_count"] = p_instance_count;
+    return result;
+}
+
+struct MeshCategoryOutput
+{
+    py::list submeshes;
+    py::list instances;
+};
+
+py::dict to_python(const MeshCategoryOutput& p_category)
+{
+    py::dict result;
+    result["submeshes"] = p_category.submeshes;
+    result["instances"] = p_category.instances;
+    return result;
+}
+
+py::dict make_mesh(const std::string& p_id,
+    const MeshCategoryOutput& p_opaque,
+    const MeshCategoryOutput& p_masked,
+    const MeshCategoryOutput& p_double_sided_opaque)
+{
+    py::dict result;
+    result["id"] = p_id;
+    result["type"] = "mesh";
+    result["opaque_instances"] = to_python(p_opaque);
+    result["masked_instances"] = to_python(p_masked);
+    result["double_sided_opaque_instances"] = to_python(p_double_sided_opaque);
+    return result;
+}
+
+MeshCategoryOutput& select_category(
+    MeshCategory p_category, MeshCategoryOutput& p_opaque, MeshCategoryOutput& p_masked, MeshCategoryOutput& p_double_sided_opaque)
+{
+    if (p_category == MeshCategory::MASKED)
+    {
+        return p_masked;
+    }
+    return p_category == MeshCategory::DOUBLE_SIDED_OPAQUE ? p_double_sided_opaque : p_opaque;
 }
 
 py::list mesh_resources_to_python(const IntermediateScene& p_scene,
@@ -1212,54 +1296,32 @@ py::list mesh_resources_to_python(const IntermediateScene& p_scene,
     const std::string geometry_path = geometry_path_for(file_name, p_geometry_path_prefix);
     const std::string binary_id = p_mesh_id + ".geometry";
     size_t offset = 0;
-    py::list submeshes;
+    // Node transforms are baked into the vertices, so every category draws its submeshes with one identity instance.
+    constexpr std::array<float, 16> IDENTITY_TRANSFORM = {
+        1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+    MeshCategoryOutput opaque;
+    MeshCategoryOutput masked;
+    MeshCategoryOutput double_sided_opaque;
+    bool warned_blend = false;
     for (const IntermediateSubmesh& submesh : p_scene.submeshes)
     {
-        submeshes.append(to_python(submesh, write_submesh_geometry(submesh, output_file, output_path, offset, binary_id)));
+        const py::dict geometry_views = write_submesh_geometry(submesh, output_file, output_path, offset, binary_id);
+        const MeshCategory category = classify_submesh(submesh, p_scene.materials, warned_blend);
+        if (category == MeshCategory::OMITTED)
+        {
+            continue;
+        }
+        MeshCategoryOutput& target = select_category(category, opaque, masked, double_sided_opaque);
+        if (target.instances.empty())
+        {
+            target.instances.append(make_mesh_instance(IDENTITY_TRANSFORM));
+        }
+        target.submeshes.append(make_mesh_submesh(submesh, geometry_views, 0, 1));
     }
-
-    py::dict mesh;
-    mesh["id"] = p_mesh_id;
-    mesh["type"] = "mesh";
-    mesh["submeshes"] = submeshes;
 
     py::list result;
-    result.append(mesh);
+    result.append(make_mesh(p_mesh_id, opaque, masked, double_sided_opaque));
     result.append(binary_to_python(binary_id, geometry_path));
-    return result;
-}
-
-py::dict make_static_geometry_instance(const StaticGeometryPlacement& p_placement)
-{
-    py::dict result;
-    py::list transform;
-    for (float value : p_placement.global_transform)
-    {
-        transform.append(value);
-    }
-    result["global_transform"] = transform;
-    return result;
-}
-
-py::dict make_static_geometry_submesh(
-    const IntermediateSubmesh& p_submesh, const py::dict& p_geometry_views, size_t p_first_instance, size_t p_instance_count)
-{
-    py::dict result;
-    result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
-    result["vertices"] = p_geometry_views["vertices"];
-    result["indices"] = p_geometry_views["indices"];
-    result["first_instance"] = p_first_instance;
-    result["instance_count"] = p_instance_count;
-    return result;
-}
-
-py::dict make_static_geometry_set(const std::string& p_id, const std::string& p_type, const py::list& p_submeshes, const py::list& p_instances)
-{
-    py::dict result;
-    result["id"] = p_id;
-    result["type"] = p_type;
-    result["submeshes"] = p_submeshes;
-    result["instances"] = p_instances;
     return result;
 }
 
@@ -1303,46 +1365,31 @@ py::list static_geometry_resources_to_python(const StaticGeometryScene& p_scene,
             index_binary_id));
     }
 
-    py::list opaque_submeshes;
-    py::list opaque_instances;
-    py::list double_sided_submeshes;
-    py::list double_sided_instances;
-    py::list masked_submeshes;
-    py::list masked_instances;
+    MeshCategoryOutput opaque;
+    MeshCategoryOutput masked;
+    MeshCategoryOutput double_sided_opaque;
     bool warned_blend = false;
     for (size_t mesh_index = 0; mesh_index < p_scene.submeshes.size(); ++mesh_index)
     {
         const IntermediateSubmesh& submesh = p_scene.submeshes[mesh_index];
-        const auto material = std::ranges::find_if(p_scene.materials, [&submesh](const IntermediateMaterial& p_material) {
-            return submesh.has_material && p_material.id == submesh.material_id;
-        });
-        if (material != p_scene.materials.end() && material->alpha_mode == "BLEND")
+        const MeshCategory category = classify_submesh(submesh, p_scene.materials, warned_blend);
+        if (category == MeshCategory::OMITTED)
         {
-            if (!warned_blend)
-            {
-                py::print("WBEUtilsModelCompiler: warning: static_geometry omits BLEND primitives; transparent static sets are not implemented yet.");
-                warned_blend = true;
-            }
             continue;
         }
-        const bool is_masked = material != p_scene.materials.end() && material->masked;
-        const bool is_double_sided = material != p_scene.materials.end() && material->double_sided;
-        py::list& target_submeshes = is_masked ? masked_submeshes : (is_double_sided ? double_sided_submeshes : opaque_submeshes);
-        py::list& target_instances = is_masked ? masked_instances : (is_double_sided ? double_sided_instances : opaque_instances);
-        const size_t first_instance = target_instances.size();
+        MeshCategoryOutput& target = select_category(category, opaque, masked, double_sided_opaque);
+        const size_t first_instance = target.instances.size();
         for (const StaticGeometryPlacement& placement : p_scene.placements_by_mesh[mesh_index])
         {
-            target_instances.append(make_static_geometry_instance(placement));
+            target.instances.append(make_mesh_instance(placement.global_transform));
         }
-        target_submeshes.append(make_static_geometry_submesh(submesh, geometry_views[mesh_index], first_instance, target_instances.size() - first_instance));
+        target.submeshes.append(make_mesh_submesh(submesh, geometry_views[mesh_index], first_instance, target.instances.size() - first_instance));
     }
 
     py::list result;
     result.append(binary_to_python(vertex_binary_id, geometry_path_for(vertex_file_name, p_geometry_path_prefix)));
     result.append(binary_to_python(index_binary_id, geometry_path_for(index_file_name, p_geometry_path_prefix)));
-    result.append(make_static_geometry_set(p_resource_id + ".static_opaque_set", "static_opaque_set", opaque_submeshes, opaque_instances));
-    result.append(make_static_geometry_set(p_resource_id + ".static_masked_set", "static_masked_set", masked_submeshes, masked_instances));
-    result.append(make_static_geometry_set(p_resource_id + ".static_opaque_double_sided_set", "static_opaque_double_sided_set", double_sided_submeshes, double_sided_instances));
+    result.append(make_mesh(p_resource_id + ".mesh", opaque, masked, double_sided_opaque));
     return result;
 }
 

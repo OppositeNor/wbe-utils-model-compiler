@@ -20,6 +20,8 @@ import struct
 from threading import Barrier, Lock, get_ident
 import zlib
 
+from typing import Any
+
 import pytest
 import wbe_utils_model_compiler
 from wbe_utils_model_compiler import TextureCompileRequest, WBEUtilsModelCompiler
@@ -258,6 +260,13 @@ def _write_standalone_pbr_obj(p_directory: Path) -> Path:
     return source_path
 
 
+MESH_CATEGORIES: tuple[str, ...] = ("opaque_instances", "masked_instances", "double_sided_opaque_instances")
+
+
+def _submeshes(p_mesh: dict[str, Any]) -> list[dict[str, Any]]:
+    return [submesh for category in MESH_CATEGORIES for submesh in p_mesh[category]["submeshes"]]
+
+
 def test_package_imports() -> None:
     assert wbe_utils_model_compiler.WBEUtilsModelCompiler is WBEUtilsModelCompiler
     assert hasattr(_native, "compile_mesh")
@@ -272,12 +281,17 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert isinstance(compiled, dict)
     assert compiled["id"] == "cube.mesh"
     assert compiled["type"] == "mesh"
-    assert isinstance(compiled["submeshes"], list)
-    assert compiled["submeshes"]
+    assert compiled["opaque_instances"]["submeshes"]
+    assert compiled["masked_instances"] == {"submeshes": [], "instances": []}
+    assert compiled["double_sided_opaque_instances"] == {"submeshes": [], "instances": []}
+    identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    assert compiled["opaque_instances"]["instances"] == [{"global_transform": identity}]
 
-    submesh = compiled["submeshes"][0]
-    assert submesh["id"] == "cube.submesh.Cube"
-    assert submesh["type"] == "submesh"
+    submesh = compiled["opaque_instances"]["submeshes"][0]
+    assert "id" not in submesh
+    assert "type" not in submesh
+    assert submesh["first_instance"] == 0
+    assert submesh["instance_count"] == 1
     assert submesh["material_id"] == "cube.material.Cube"
     assert "vertices_data" not in submesh
     assert "indices_data" not in submesh
@@ -334,8 +348,8 @@ def test_mesh_compilation_scales_positions_and_converts_between_coordinate_space
     }
     converted = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, converted_output_dir)
 
-    baseline_submesh = baseline["submeshes"][0]
-    converted_submesh = converted["submeshes"][0]
+    baseline_submesh = _submeshes(baseline)[0]
+    converted_submesh = _submeshes(converted)[0]
     baseline_path = _binary_path(baseline_output_dir, baseline_submesh)
     converted_path = _binary_path(converted_output_dir, converted_submesh)
 
@@ -369,15 +383,13 @@ def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) 
 
     combined = compiler.compile_mesh(resource, source_path.parent / "manifest.json", source_path.parent, combined_output_dir)
 
-    assert len(combined["submeshes"]) == 2
-    assert combined["submeshes"][0]["id"] == "cube.submesh.Cube"
-    assert combined["submeshes"][1]["id"] == "cube.submesh.Cube.1"
+    assert len(_submeshes(combined)) == 2
     baseline_positions = _vec3_section(
-        _binary_path(baseline_output_dir, baseline["submeshes"][0]), baseline["submeshes"][0], "position")
+        _binary_path(baseline_output_dir, _submeshes(baseline)[0]), _submeshes(baseline)[0], "position")
     child_positions = _vec3_section(
-        _binary_path(combined_output_dir, combined["submeshes"][0]), combined["submeshes"][0], "position")
+        _binary_path(combined_output_dir, _submeshes(combined)[0]), _submeshes(combined)[0], "position")
     instance_positions = _vec3_section(
-        _binary_path(combined_output_dir, combined["submeshes"][1]), combined["submeshes"][1], "position")
+        _binary_path(combined_output_dir, _submeshes(combined)[1]), _submeshes(combined)[1], "position")
     for baseline_position, child_position, instance_position in zip(
             baseline_positions, child_positions, instance_positions, strict=True):
         assert child_position == pytest.approx(
@@ -386,19 +398,19 @@ def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) 
             (baseline_position[0], baseline_position[1], baseline_position[2] + 4.0))
     for slot in ("normal", "tangent", "bitangent"):
         baseline_vectors = _vec3_section(
-            _binary_path(baseline_output_dir, baseline["submeshes"][0]), baseline["submeshes"][0], slot)
+            _binary_path(baseline_output_dir, _submeshes(baseline)[0]), _submeshes(baseline)[0], slot)
         child_vectors = _vec3_section(
-            _binary_path(combined_output_dir, combined["submeshes"][0]), combined["submeshes"][0], slot)
+            _binary_path(combined_output_dir, _submeshes(combined)[0]), _submeshes(combined)[0], slot)
         instance_vectors = _vec3_section(
-            _binary_path(combined_output_dir, combined["submeshes"][1]), combined["submeshes"][1], slot)
+            _binary_path(combined_output_dir, _submeshes(combined)[1]), _submeshes(combined)[1], slot)
         for baseline_vector, child_vector, instance_vector in zip(
                 baseline_vectors, child_vectors, instance_vectors, strict=True):
             assert child_vector == pytest.approx((baseline_vector[1], baseline_vector[0], baseline_vector[2]), abs=1.0E-6)
             assert instance_vector == pytest.approx(baseline_vector)
     baseline_indices = _index_section(
-        _binary_path(baseline_output_dir, baseline["submeshes"][0]), baseline["submeshes"][0])
+        _binary_path(baseline_output_dir, _submeshes(baseline)[0]), _submeshes(baseline)[0])
     child_indices = _index_section(
-        _binary_path(combined_output_dir, combined["submeshes"][0]), combined["submeshes"][0])
+        _binary_path(combined_output_dir, _submeshes(combined)[0]), _submeshes(combined)[0])
     expected_child_indices: list[int] = []
     for index in range(0, len(baseline_indices), 3):
         expected_child_indices.extend((baseline_indices[index], baseline_indices[index + 2], baseline_indices[index + 1]))
@@ -414,8 +426,8 @@ def test_mesh_compilation_reverses_winding_for_negative_position_scale(tmp_path:
 
     scaled = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, scaled_output_dir)
 
-    baseline_submesh = baseline["submeshes"][0]
-    scaled_submesh = scaled["submeshes"][0]
+    baseline_submesh = _submeshes(baseline)[0]
+    scaled_submesh = _submeshes(scaled)[0]
     for slot in ("normal", "tangent", "bitangent"):
         baseline_vectors = _vec3_section(_binary_path(baseline_output_dir, baseline_submesh), baseline_submesh, slot)
         scaled_vectors = _vec3_section(_binary_path(scaled_output_dir, scaled_submesh), scaled_submesh, slot)
@@ -438,8 +450,8 @@ def test_mesh_compilation_defaults_front_to_positive_z(tmp_path: Path, space_key
     resource = {**_cube_resource(), space_key: {"front": "-z"}}
     converted = compiler.compile_mesh(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, converted_output_dir)
 
-    baseline_submesh = baseline["submeshes"][0]
-    converted_submesh = converted["submeshes"][0]
+    baseline_submesh = _submeshes(baseline)[0]
+    converted_submesh = _submeshes(converted)[0]
     baseline_path = _binary_path(baseline_output_dir, baseline_submesh)
     converted_path = _binary_path(converted_output_dir, converted_submesh)
     baseline_positions = _vec3_section(baseline_path, baseline_submesh, "position")
@@ -561,14 +573,14 @@ def test_geometry_compilation_converts_assimp_uv_origin(
         resource["source_files"] = [resource.pop("file")]
         resource["combine_nodes"] = False
         resources = compiler.compile_static_geometry(resource, tmp_path / "manifest.json", tmp_path, output_dir)
-        compiled = next(item for item in resources if item["type"] == "static_opaque_set")
-        submesh = compiled["submeshes"][0]
+        compiled = next(item for item in resources if item["type"] == "mesh")
+        submesh = _submeshes(compiled)[0]
         binary_id = submesh["vertices"]["binary"]["binary_id"]
         binary = next(item for item in resources if item["id"] == binary_id)
         binary_path = output_dir / binary["path"]
     else:
         compiled = compiler.compile_mesh(resource, tmp_path / "manifest.json", tmp_path, output_dir)
-        submesh = compiled["submeshes"][0]
+        submesh = _submeshes(compiled)[0]
         binary_path = _binary_path(output_dir, submesh)
     uv_values = _vec2_section(binary_path, submesh, "uv")
     # OBJ UVs already use Assimp's bottom-left convention; the default converts them to top-left.
@@ -675,26 +687,24 @@ def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path:
     assert compiled[1] == {"id": "cube.indices", "type": "binary", "path": "cube.indices.bin"}
     assert (tmp_path / "cube.vertices.bin").is_file()
     assert (tmp_path / "cube.indices.bin").is_file()
-    opaque_set = compiled[2]
-    masked_set = compiled[3]
-    assert opaque_set["id"] == "cube.static_opaque_set"
-    assert opaque_set["type"] == "static_opaque_set"
-    assert masked_set["id"] == "cube.static_masked_set"
-    assert masked_set["type"] == "static_masked_set"
-    assert masked_set["submeshes"] == []
-    assert masked_set["instances"] == []
-    assert opaque_set["submeshes"]
-    assert opaque_set["instances"]
-    submesh = opaque_set["submeshes"][0]
+    assert compiled[2]["id"] == "cube.mesh"
+    assert compiled[2]["type"] == "mesh"
+    opaque_mesh = compiled[2]["opaque_instances"]
+    masked_mesh = compiled[2]["masked_instances"]
+    assert masked_mesh["submeshes"] == []
+    assert masked_mesh["instances"] == []
+    assert opaque_mesh["submeshes"]
+    assert opaque_mesh["instances"]
+    submesh = opaque_mesh["submeshes"][0]
     assert submesh["material_id"] == "cube.material.Cube"
     assert submesh["vertices"]["binary"]["binary_id"] == "cube.vertices"
     assert submesh["indices"]["binary"]["binary_id"] == "cube.indices"
     assert submesh["first_instance"] == 0
-    assert submesh["instance_count"] == len(opaque_set["instances"])
-    assert len(opaque_set["instances"][0]["global_transform"]) == 16
-    assert _texture_resources(compiled[5:])
-    assert _material_resources(compiled[5:])
-    assert len(_texture_resources(compiled[5:])) + len(_material_resources(compiled[5:])) == len(compiled[5:])
+    assert submesh["instance_count"] == len(opaque_mesh["instances"])
+    assert len(opaque_mesh["instances"][0]["global_transform"]) == 16
+    assert _texture_resources(compiled[3:])
+    assert _material_resources(compiled[3:])
+    assert len(_texture_resources(compiled[3:])) + len(_material_resources(compiled[3:])) == len(compiled[3:])
 
 
 def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path) -> None:
@@ -704,13 +714,13 @@ def test_static_geometry_compilation_partitions_masked_materials(tmp_path: Path)
 
     compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
 
-    opaque_set = compiled[2]
-    masked_set = compiled[3]
-    assert opaque_set["submeshes"] == []
-    assert opaque_set["instances"] == []
-    assert masked_set["submeshes"]
-    assert masked_set["instances"]
-    assert masked_set["submeshes"][0]["instance_count"] == len(masked_set["instances"])
+    opaque_mesh = compiled[2]["opaque_instances"]
+    masked_mesh = compiled[2]["masked_instances"]
+    assert opaque_mesh["submeshes"] == []
+    assert opaque_mesh["instances"] == []
+    assert masked_mesh["submeshes"]
+    assert masked_mesh["instances"]
+    assert masked_mesh["submeshes"][0]["instance_count"] == len(masked_mesh["instances"])
 
 
 def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -721,13 +731,13 @@ def test_static_geometry_compilation_omits_blend_materials(tmp_path: Path, capsy
     compiled = compiler.compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
 
     captured = capsys.readouterr()
-    assert captured.out.count("static_geometry omits BLEND primitives") == 1
-    opaque_set = compiled[2]
-    masked_set = compiled[3]
-    assert opaque_set["submeshes"] == []
-    assert opaque_set["instances"] == []
-    assert masked_set["submeshes"] == []
-    assert masked_set["instances"] == []
+    assert captured.out.count("meshes omit BLEND primitives") == 1
+    opaque_mesh = compiled[2]["opaque_instances"]
+    masked_mesh = compiled[2]["masked_instances"]
+    assert opaque_mesh["submeshes"] == []
+    assert opaque_mesh["instances"] == []
+    assert masked_mesh["submeshes"] == []
+    assert masked_mesh["instances"] == []
 
 
 def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) -> None:
@@ -739,17 +749,17 @@ def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) ->
 
     vertex_binary = compiled[0]
     index_binary = compiled[1]
-    opaque_set = compiled[2]
+    opaque_mesh = compiled[2]["opaque_instances"]
     assert vertex_binary["type"] == "binary"
     assert index_binary["type"] == "binary"
-    assert len(opaque_set["submeshes"]) == 1
-    assert len(opaque_set["instances"]) == 2
-    submesh = opaque_set["submeshes"][0]
+    assert len(opaque_mesh["submeshes"]) == 1
+    assert len(opaque_mesh["instances"]) == 2
+    submesh = opaque_mesh["submeshes"][0]
     assert submesh["vertices"]["binary"]["binary_id"] == vertex_binary["id"]
     assert submesh["indices"]["binary"]["binary_id"] == index_binary["id"]
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == 2
-    second_transform = opaque_set["instances"][1]["global_transform"]
+    second_transform = opaque_mesh["instances"][1]["global_transform"]
     assert second_transform[12:15] == pytest.approx([0.0, 0.0, 4.0])
 
 
@@ -917,11 +927,11 @@ def test_static_geometry_stacks_sources(tmp_path: Path, second_category: str) ->
         "double_sided_graphics_pipeline_ids": ["double_sided_pipeline"],
     }
     compiled = _compiler().compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
-    assert [item["type"] for item in compiled[:4]] == ["binary", "binary", "static_opaque_set", "static_masked_set"]
-    sets = compiled[2:5]
-    submeshes = [submesh for static_set in sets for submesh in static_set["submeshes"]]
+    assert [item["type"] for item in compiled[:3]] == ["binary", "binary", "mesh"]
+    sets = [compiled[2][category] for category in MESH_CATEGORIES]
+    submeshes = [submesh for static_mesh in sets for submesh in static_mesh["submeshes"]]
     assert len(submeshes) == 2
-    assert sum(len(static_set["instances"]) for static_set in sets) == 4
+    assert sum(len(static_mesh["instances"]) for static_mesh in sets) == 4
     materials = {item["id"]: item for item in _material_resources(compiled)}
     assert len(materials) == len(_material_resources(compiled))
     assert len({submesh["material_id"] for submesh in submeshes}) == 2
@@ -933,10 +943,10 @@ def test_static_geometry_stacks_sources(tmp_path: Path, second_category: str) ->
         assert submesh["instance_count"] == 2
     assert submeshes[1]["vertices"]["binary"]["start"] > submeshes[0]["vertices"]["binary"]["start"]
     assert submeshes[1]["indices"]["binary"]["start"] > submeshes[0]["indices"]["binary"]["start"]
-    for static_set in sets:
-        for index, submesh in enumerate(static_set["submeshes"]):
+    for static_mesh in sets:
+        for index, submesh in enumerate(static_mesh["submeshes"]):
             assert submesh["first_instance"] == index * 2
-            transform = static_set["instances"][submesh["first_instance"] + 1]["global_transform"]
+            transform = static_mesh["instances"][submesh["first_instance"] + 1]["global_transform"]
             expected = [5.0, 0.0, 8.0] if ".source.1." in submesh["material_id"] else [0.0, 0.0, 4.0]
             assert transform[12:15] == pytest.approx(expected)
     assert len(sets[1]["submeshes"]) == int(second_category == "masked")
@@ -1071,9 +1081,9 @@ def test_double_sided_material_pipeline_selection(
 
 
 @pytest.mark.parametrize("alpha_mode,double_sided,category", [
-    ("OPAQUE", True, "static_opaque_double_sided_set"),
-    ("OPAQUE", False, "static_opaque_set"),
-    ("MASK", True, "static_masked_set"),
+    ("OPAQUE", True, "double_sided_opaque_instances"),
+    ("OPAQUE", False, "opaque_instances"),
+    ("MASK", True, "masked_instances"),
     ("BLEND", True, None),
 ])
 def test_static_geometry_partitions_double_sided_materials(
@@ -1088,12 +1098,11 @@ def test_static_geometry_partitions_double_sided_materials(
     source.write_text(json.dumps(document))
     resource = {**_cube_resource(), "source_type": "static_geometry", "source_files": [str(source)], "combine_nodes": False}
     compiled = _compiler().compile_static_geometry(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
-    assert [item["type"] for item in compiled[2:]] == [
-        "static_opaque_set", "static_masked_set", "static_opaque_double_sided_set"
-    ]
-    for static_set in compiled[2:]:
-        assert bool(static_set["submeshes"]) == (static_set["type"] == category)
-        assert bool(static_set["instances"]) == (static_set["type"] == category)
-        for submesh in static_set["submeshes"]:
-            assert submesh["first_instance"] + submesh["instance_count"] <= len(static_set["instances"])
+    assert [item["type"] for item in compiled[2:]] == ["mesh"]
+    for mesh_category in MESH_CATEGORIES:
+        static_mesh = compiled[2][mesh_category]
+        assert bool(static_mesh["submeshes"]) == (mesh_category == category)
+        assert bool(static_mesh["instances"]) == (mesh_category == category)
+        for submesh in static_mesh["submeshes"]:
+            assert submesh["first_instance"] + submesh["instance_count"] <= len(static_mesh["instances"])
             assert submesh["vertices"]["binary"]["binary_id"] == "cube.vertices"

@@ -66,7 +66,7 @@ public:
         bool p_flip_v = false) const;
 
     /**
-     * @brief Stack model sources into shared static geometry sets, preserving each node's transform.
+     * @brief Stack model sources into shared static meshes, preserving each node's transform.
      * @param p_source_paths Non-empty ordered source list. Multiple sources receive distinct ID prefixes.
      * @throws std::runtime_error If the source list is empty or a model cannot be loaded.
      */

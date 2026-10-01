@@ -47,7 +47,7 @@ class WBEUtilsModelCompiler:
         return ["model", "static_geometry"]
 
     def _get_cache_version(self) -> str:
-        return f"{__version__}:double-sided-static-v1"
+        return f"{__version__}:mesh-categories-v1"
 
     def compile(
         self,
@@ -178,7 +178,7 @@ class WBEUtilsModelCompiler:
             target_front,
             flip_v,
         )
-        if not isinstance(compiled_resources, list) or len(compiled_resources) != 5:
+        if not isinstance(compiled_resources, list) or len(compiled_resources) != 3:
             raise RuntimeError("Model compiler produced invalid static geometry resources.")
         return compiled_resources
 

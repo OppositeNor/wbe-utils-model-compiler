@@ -140,8 +140,8 @@ material_resources = compiler.compile_materials(
 ```
 
 `compile` returns mesh or static-geometry resources first, followed by material resources. Ordinary models emit a mesh resource
-and one binary resource before materials. Static geometry emits vertex and index binary resources, one `static_opaque_set`, one
-`static_masked_set`, and one `static_opaque_double_sided_set` before materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
+and one binary resource before materials. Static geometry emits vertex and index binary resources and one mesh resource before
+materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
 remain available when only one output category is needed.
 
 Texture conversion uses the existing `BS::thread_pool` dependency. `texture_worker_count` defaults to at most four workers,
@@ -202,22 +202,28 @@ without invoking the native compiler.
 
 Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
 
-Opaque materials with glTF `doubleSided: true` use `double_sided_graphics_pipeline_ids` (falling back to `graphics_pipeline_ids` when absent or empty). Their primitives always go into `static_opaque_double_sided_set`, independently of pipeline overrides. Missing `doubleSided` defaults to false. Masked materials remain in `static_masked_set`; BLEND primitives remain omitted. All three sets share the same vertex/index binaries, with independent instance ranges. Renderers must draw the double-sided category with face culling disabled and reverse lighting normals on back faces.
+Opaque materials with glTF `doubleSided: true` use `double_sided_graphics_pipeline_ids` (falling back to `graphics_pipeline_ids` when absent or empty). Their primitives always go into the mesh's `double_sided_opaque_instances` category, independently of pipeline overrides. Missing `doubleSided` defaults to false. Masked materials go into `masked_instances`, other opaque materials into `opaque_instances`, and BLEND primitives are omitted with one compiler warning. These rules apply to both `model` and `static_geometry`. All three categories share the same vertex/index binaries, with independent instance ranges. Renderers must draw the double-sided category with face culling disabled and reverse lighting normals on back faces.
 
-`type` and `texture_config` are required. Models require `file`; static geometry requires a non-empty `source_files` array of strings. Static sources are stacked in their original coordinate systems into opaque, masked, and opaque double-sided sets sharing vertex and index binaries. Each source preserves its node transforms and receives distinct material/submesh IDs when multiple sources are supplied. When `id` is omitted, the first source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
+`type` and `texture_config` are required. Models require `file`; static geometry requires a non-empty `source_files` array of strings. Static sources are stacked in their original coordinate systems into the opaque, masked, and double-sided opaque categories sharing vertex and index binaries. Each source preserves its node transforms and receives distinct material/submesh IDs when multiple sources are supplied. When `id` is omitted, the first source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
 When `texture_output_dir` is provided, the injected texture compiler writes KTX2 textures under `res_output_dir / texture_output_dir`. Generated inputs such as repacked roughness-metallic-ambient-occlusion images are compiled through the same interface. Texture-role configuration keys are arbitrary strings. A material texture uses its matching entry under `texture_config.roles`, or `texture_config.default` when no matching entry exists.
 
 ## Mesh Resource Output
 
+Both `model` and `static_geometry` emit one mesh resource with id `<id>.mesh`:
+
 ```python
 {
-	"id": str,
+	"id": "<id>.mesh",
 	"type": "mesh",
+	"opaque_instances": SubmeshInstances,
+	"masked_instances": SubmeshInstances,
+	"double_sided_opaque_instances": SubmeshInstances,
+}
+
+SubmeshInstances = {
 	"submeshes": [
 		{
-			"id": str,
-			"type": "submesh",
 			"vertices": {
 				"binary": {"binary_id": str, "start": int, "size": int},
 				"stride": int,
@@ -231,33 +237,26 @@ When `texture_output_dir` is provided, the injected texture compiler writes KTX2
 			},
 			"indices": {"binary": {"binary_id": str, "start": int, "size": int}},
 			"material_id": str | None,
+			"first_instance": int,
+			"instance_count": int,
 		}
 	],
-}
-
-{
-	"id": str,
-	"type": "binary",
-	"path": str,
+	"instances": [{"global_transform": list[float]}],
 }
 ```
 
-Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex attribute values followed by `uint32` indices with no file header. View metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` attributes when tangent data is available for the source mesh.
+Each submesh draws instances `[first_instance, first_instance + instance_count)` of its category. Instances store
+`global_transform` as exactly 16 column-major floats. Ordinary models bake node transforms into their vertices, so every non-empty
+category holds one identity instance and each submesh draws it once. Static geometry preserves node transforms as instances.
 
-## Static Geometry Resource Output
+Ordinary models emit one geometry binary, `<id>.mesh.geometry`; static geometry emits separate `<id>.vertices` and `<id>.indices`
+binaries:
 
 ```python
-[
-	{"id": "<id>.geometry", "type": "binary", "path": str},
-	{"id": "<id>.static_opaque_set", "type": "static_opaque_set", "submeshes": list[dict], "instances": list[dict]},
-	{"id": "<id>.static_masked_set", "type": "static_masked_set", "submeshes": list[dict], "instances": list[dict]},
-	{"id": "<id>.static_opaque_double_sided_set", "type": "static_opaque_double_sided_set", "submeshes": list[dict], "instances": list[dict]},
-]
+{"id": str, "type": "binary", "path": str}
 ```
 
-Static set submeshes use the same `vertices` and `indices` view shape as mesh submeshes, plus `first_instance` and
-`instance_count`. Instances store `global_transform` as exactly 16 column-major floats. glTF `MASK` primitives go to the masked
-set, `OPAQUE` primitives go to the opaque set, and `BLEND` primitives are omitted with one compiler warning.
+Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex attribute values and `uint32` indices with no file header. View metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` attributes when tangent data is available for the source mesh.
 
 ## Material Resource Output
 
