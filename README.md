@@ -6,7 +6,7 @@ The public API is a Python package. Mesh loading and resource conversion are imp
 
 ## What It Produces
 
-The compiler returns Python dictionaries that match White Bird Engine resource formats. Model compilation returns a mesh resource with submeshes, binary geometry section descriptors, sidecar geometry binaries, and material references. Material compilation returns material resources with pipeline IDs and texture bindings.
+The compiler returns Python dictionaries that match White Bird Engine resource formats. Model compilation returns a mesh resource with submeshes, binary geometry section descriptors, sidecar geometry binaries, and material references. Material compilation returns material resources with texture bindings.
 
 The native layer returns Python-compatible objects directly through pybind11. It does not expose C structs, STL containers, or C++ objects as part of the public Python API.
 
@@ -105,9 +105,6 @@ resource = {
 	"type": "model",
 	"file": "Cube/glTF/Cube.gltf",
 	"combine_nodes": True,
-	"graphics_pipeline_ids": ["main_pipeline"],
-	"masked_graphics_pipeline_ids": ["masked_pipeline"],
-	"double_sided_graphics_pipeline_ids": ["opaque_double_sided_pipeline"],
 	"texture_output_dir": "textures",
 	"texture_config": {
 		"default": {"target_format": "bc7", "generate_mipmap": True},
@@ -169,9 +166,6 @@ without invoking the native compiler.
 	"file": str,  # model only
 	"source_files": list[str],  # static_geometry only
 	"combine_nodes": bool,
-	"graphics_pipeline_ids": list[str],
-	"masked_graphics_pipeline_ids": list[str],
-	"double_sided_graphics_pipeline_ids": list[str],
 	"texture_output_dir": str,
 	"texture_config": {
 		"default": {
@@ -200,9 +194,7 @@ without invoking the native compiler.
 }
 ```
 
-Materials tagged with glTF `alphaMode: "MASK"` use `masked_graphics_pipeline_ids`. If that list is absent or empty, they fall back to `graphics_pipeline_ids`.
-
-Opaque materials with glTF `doubleSided: true` use `double_sided_graphics_pipeline_ids` (falling back to `graphics_pipeline_ids` when absent or empty). Their primitives always go into the mesh's `double_sided_opaque_instances` category, independently of pipeline overrides. Missing `doubleSided` defaults to false. Masked materials go into `masked_instances`, other opaque materials into `opaque_instances`, and BLEND primitives are omitted with one compiler warning. These rules apply to both `model` and `static_geometry`. All three categories share the same vertex/index binaries, with independent instance ranges. Renderers must draw the double-sided category with face culling disabled and reverse lighting normals on back faces.
+Primitives of opaque materials with glTF `doubleSided: true` go into the mesh's `double_sided_opaque_instances` category. Missing `doubleSided` defaults to false. Masked materials go into `masked_instances`, other opaque materials into `opaque_instances`, and BLEND primitives are omitted with one compiler warning. These rules apply to both `model` and `static_geometry`. All three categories share the same vertex/index binaries, with independent instance ranges. Renderers must draw the double-sided category with face culling disabled and reverse lighting normals on back faces.
 
 `type` and `texture_config` are required. Models require `file`; static geometry requires a non-empty `source_files` array of strings. Static sources are stacked in their original coordinate systems into the opaque, masked, and double-sided opaque categories sharing vertex and index binaries. Each source preserves its node transforms and receives distinct material/submesh IDs when multiple sources are supplied. When `id` is omitted, the first source file stem is used. Ordinary `model` resources require `combine_nodes: true`; the `false` behavior is not implemented yet. `static_geometry` resources always preserve nodes as instances and reject `combine_nodes: true`. `geometry_output_dir` is resource-root-relative; when omitted, geometry sidecars are emitted near the declaring manifest path under `res_output_dir`. `scale_vertex_pos` defaults to `1.0`. Both coordinate spaces default to `up: "y"`, `right: "x"`, and `front: "+z"`; omitted directions use the same defaults. Unsigned and `+`-prefixed positive axes are equivalent.
 
@@ -266,7 +258,6 @@ Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex
 {
 	"id": str,
 	"type": "material",
-	"graphics_pipeline_ids": list[str],
 	"textures": [{"texture_role": str, "texture_id": str}],
 }
 ```

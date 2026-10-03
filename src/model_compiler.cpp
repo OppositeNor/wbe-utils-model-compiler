@@ -935,16 +935,6 @@ StaticGeometryScene import_static_geometry_scene(const std::filesystem::path& p_
     return result;
 }
 
-py::list pipeline_ids_from(const py::list& p_graphics_pipeline_ids)
-{
-    py::list result;
-    for (const py::handle item : p_graphics_pipeline_ids)
-    {
-        result.append(py::str(item));
-    }
-    return result;
-}
-
 py::dict make_binary_view(const std::string& p_binary_id, size_t p_start, size_t p_size)
 {
     py::dict result;
@@ -1406,24 +1396,11 @@ py::dict to_python(const IntermediateMaterialTexture& p_texture)
     return result;
 }
 
-py::dict material_to_python(const IntermediateMaterial& p_material,
-    const py::list& p_graphics_pipeline_ids,
-    const py::list& p_masked_graphics_pipeline_ids,
-    const py::list& p_double_sided_graphics_pipeline_ids)
+py::dict material_to_python(const IntermediateMaterial& p_material)
 {
     py::dict result;
     result["id"] = p_material.id;
     result["type"] = "material";
-    const py::list* graphics_pipeline_ids = &p_graphics_pipeline_ids;
-    if (p_material.masked && p_masked_graphics_pipeline_ids.size() > 0)
-    {
-        graphics_pipeline_ids = &p_masked_graphics_pipeline_ids;
-    }
-    else if (p_material.alpha_mode == "OPAQUE" && p_material.double_sided && p_double_sided_graphics_pipeline_ids.size() > 0)
-    {
-        graphics_pipeline_ids = &p_double_sided_graphics_pipeline_ids;
-    }
-    result["graphics_pipeline_ids"] = pipeline_ids_from(*graphics_pipeline_ids);
 
     py::list textures;
     for (const IntermediateMaterialTexture& texture : p_material.textures)
@@ -1438,7 +1415,6 @@ py::dict material_to_python(const IntermediateMaterial& p_material,
 py::list ModelCompiler::compile_mesh(
     const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
-    const py::list& p_graphics_pipeline_ids,
     const std::string& p_texture_output_dir,
     const std::filesystem::path& p_geometry_output_dir,
     const std::string& p_geometry_path_prefix,
@@ -1452,7 +1428,6 @@ py::list ModelCompiler::compile_mesh(
     bool p_combine_nodes,
     bool p_flip_v) const
 {
-    (void)p_graphics_pipeline_ids;
     if (!p_combine_nodes)
     {
         // TODO: Preserve model nodes as separate runtime scene resources once the scene representation is implemented.
@@ -1563,11 +1538,8 @@ void ModelCompiler::compile_textures(const py::function& p_compile_texture,
 py::list ModelCompiler::compile_materials(
     const std::filesystem::path& p_source_path,
     const std::string& p_resource_id,
-    const py::list& p_graphics_pipeline_ids,
-    const py::list& p_masked_graphics_pipeline_ids,
     const std::string& p_texture_output_dir,
-    const std::filesystem::path& p_texture_output_root,
-    const py::list& p_double_sided_graphics_pipeline_ids) const
+    const std::filesystem::path& p_texture_output_root) const
 {
     const IntermediateScene scene = import_scene(
         p_source_path,
@@ -1579,7 +1551,7 @@ py::list ModelCompiler::compile_materials(
     py::list result;
     for (const IntermediateMaterial& material : scene.materials)
     {
-        result.append(material_to_python(material, p_graphics_pipeline_ids, p_masked_graphics_pipeline_ids, p_double_sided_graphics_pipeline_ids));
+        result.append(material_to_python(material));
     }
     return result;
 }

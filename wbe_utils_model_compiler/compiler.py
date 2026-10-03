@@ -109,7 +109,6 @@ class WBEUtilsModelCompiler:
 
         # Forward the resolved paths and coordinate space configuration to native code.
         resource_id = str(resource.get("id", source_path.stem))
-        graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
         combine_nodes = bool(resource.get("combine_nodes", False))
         flip_v = resource.get("flip_v", False)
         if not isinstance(flip_v, bool):
@@ -120,7 +119,6 @@ class WBEUtilsModelCompiler:
         compiled_resources = _native.compile_mesh(
             str(source_path),
             resource_id,
-            graphics_pipeline_ids,
             texture_output_dir,
             str(geometry_output_dir),
             geometry_path_prefix,
@@ -195,9 +193,6 @@ class WBEUtilsModelCompiler:
         res_output_dir.mkdir(parents=True, exist_ok=True)
         texture_output_dir = str(resource.get("texture_output_dir", ""))
         resource_id = str(resource.get("id", source_paths[0].stem))
-        graphics_pipeline_ids = list(resource.get("graphics_pipeline_ids", []))
-        masked_graphics_pipeline_ids = list(resource.get("masked_graphics_pipeline_ids", []))
-        double_sided_graphics_pipeline_ids = list(resource.get("double_sided_graphics_pipeline_ids", []))
         default_texture_config, role_texture_configs = self._parse_texture_config(resource)
         compiled_resources: list[ManifestResource] = []
         for source_index, source_path in enumerate(source_paths):
@@ -206,8 +201,7 @@ class WBEUtilsModelCompiler:
             if len(source_paths) > 1:
                 source_texture_output_dir = (Path(texture_output_dir or "textures") / source_id).as_posix()
             material_resources = _native.compile_materials(
-                str(source_path), source_id, graphics_pipeline_ids, masked_graphics_pipeline_ids,
-                source_texture_output_dir, str(res_output_dir), double_sided_graphics_pipeline_ids
+                str(source_path), source_id, source_texture_output_dir, str(res_output_dir)
             )
             texture_resources = self._compile_material_textures(
                 material_resources,

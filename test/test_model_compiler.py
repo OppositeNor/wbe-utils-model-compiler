@@ -52,7 +52,6 @@ def _cube_resource() -> dict[str, object]:
         "type": "model",
         "file": "Cube/glTF/Cube.gltf",
         "combine_nodes": True,
-        "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
         "texture_config": {
             "default": {"target_format": "sbc7", "generate_mipmap": True},
@@ -482,8 +481,7 @@ def test_mesh_compilation_rejects_reused_axis(tmp_path: Path, space_key: str) ->
 
 def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     compiler = _compiler()
-    resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
-    resources = compiler.compile_materials(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+    resources = compiler.compile_materials(_cube_resource(), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
     materials = _material_resources(resources)
 
     assert isinstance(materials, list)
@@ -491,7 +489,7 @@ def test_materials_compile_without_absolute_paths(tmp_path: Path) -> None:
     material = materials[0]
     assert material["id"] == "cube.material.Cube"
     assert material["type"] == "material"
-    assert material["graphics_pipeline_ids"] == ["main_pipeline"]
+    assert "graphics_pipeline_ids" not in material
     assert isinstance(material["textures"], list)
     assert material["textures"]
 
@@ -517,7 +515,6 @@ def test_materials_select_role_texture_config_and_default(
         return [{
             "id": "arbitrary.material",
             "type": "material",
-            "graphics_pipeline_ids": ["main_pipeline"],
             "textures": [
                 {"texture_key": "custom_detail", "texture": dict(texture)},
                 {"texture_key": "unconfigured_role", "texture": dict(texture)},
@@ -557,7 +554,6 @@ def test_geometry_compilation_converts_assimp_uv_origin(
         "type": "model",
         "file": source_path.as_posix(),
         "combine_nodes": True,
-        "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
         "texture_config": {
             "default": {"target_format": "sbc7", "generate_mipmap": True},
@@ -600,7 +596,6 @@ def test_materials_reject_duplicate_texture_roles(tmp_path: Path, monkeypatch: p
         return [{
             "id": "duplicate.material",
             "type": "material",
-            "graphics_pipeline_ids": ["main_pipeline"],
             "textures": [
                 {"texture_key": "albedo", "texture": dict(texture)},
                 {"texture_key": "albedo", "texture": dict(texture)},
@@ -639,7 +634,6 @@ def test_standalone_material_maps_use_red_channels(tmp_path: Path) -> None:
         "id": "standalone",
         "type": "model",
         "file": source_path.as_posix(),
-        "graphics_pipeline_ids": ["main_pipeline"],
         "texture_output_dir": "textures",
         "texture_config": {
             "default": {"target_format": "sbc7", "generate_mipmap": True},
@@ -654,27 +648,6 @@ def test_standalone_material_maps_use_red_channels(tmp_path: Path) -> None:
     width, height, pixels = _read_rgb_png(_rma_texture_path(material, resources, output_dir))
     assert (width, height) == (1, 1)
     assert pixels == [(51, 204, 255)]
-
-
-def test_masked_material_uses_masked_graphics_pipeline(tmp_path: Path) -> None:
-    _make_masked_cube(tmp_path)
-    compiler = _compiler()
-    resource = {**_cube_resource(), "masked_graphics_pipeline_ids": ["masked_pipeline"]}
-
-    resources = compiler.compile_materials(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
-    materials = _material_resources(resources)
-
-    assert materials[0]["graphics_pipeline_ids"] == ["masked_pipeline"]
-
-
-def test_masked_material_falls_back_to_graphics_pipeline(tmp_path: Path) -> None:
-    _make_masked_cube(tmp_path)
-    compiler = _compiler()
-
-    resources = compiler.compile_materials(_cube_resource(), tmp_path / "manifest.json", tmp_path, tmp_path / "output")
-    materials = _material_resources(resources)
-
-    assert materials[0]["graphics_pipeline_ids"] == ["main_pipeline"]
 
 
 def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path: Path) -> None:
@@ -923,8 +896,7 @@ def test_static_geometry_stacks_sources(tmp_path: Path, second_category: str) ->
     second.write_text(json.dumps(second_data), encoding="utf-8")
     resource = {
         **_cube_resource(), "type": "static_geometry", "combine_nodes": False,
-        "source_files": [str(first), str(second)], "masked_graphics_pipeline_ids": ["masked_pipeline"],
-        "double_sided_graphics_pipeline_ids": ["double_sided_pipeline"],
+        "source_files": [str(first), str(second)],
     }
     compiled = _compiler().compile(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
     assert [item["type"] for item in compiled[:3]] == ["binary", "binary", "mesh"]
@@ -950,10 +922,6 @@ def test_static_geometry_stacks_sources(tmp_path: Path, second_category: str) ->
             expected = [5.0, 0.0, 8.0] if ".source.1." in submesh["material_id"] else [0.0, 0.0, 4.0]
             assert transform[12:15] == pytest.approx(expected)
     assert len(sets[1]["submeshes"]) == int(second_category == "masked")
-    if second_category == "masked":
-        assert materials[submeshes[1]["material_id"]]["graphics_pipeline_ids"] == ["masked_pipeline"]
-    if second_category == "opaque_double_sided":
-        assert materials[submeshes[1]["material_id"]]["graphics_pipeline_ids"] == ["double_sided_pipeline"]
 
 
 @pytest.mark.parametrize("source_files", [None, [], "Cube/glTF/Cube.gltf", [""], [123]])
@@ -1050,34 +1018,6 @@ def test_parallel_texture_compilation_preserves_output_and_deduplicates_requests
     assert parallel == serial
     assert len(recorder.requests) == len({request.destination_path for request in recorder.requests})
     assert all(request.thread_count >= 1 for request in recorder.requests)
-
-
-@pytest.mark.parametrize(
-    ("alpha_mode", "double_sided", "override", "expected"),
-    [
-        ("OPAQUE", True, ["double_sided_pipeline"], ["double_sided_pipeline"]),
-        ("OPAQUE", False, ["double_sided_pipeline"], ["main_pipeline"]),
-        ("OPAQUE", True, [], ["main_pipeline"]),
-        ("MASK", True, ["double_sided_pipeline"], ["masked_pipeline"]),
-        ("BLEND", True, ["double_sided_pipeline"], ["main_pipeline"]),
-    ],
-)
-def test_double_sided_material_pipeline_selection(
-    tmp_path: Path, alpha_mode: str, double_sided: bool, override: list[str], expected: list[str]
-) -> None:
-    source = _make_masked_cube(tmp_path)
-    data = json.loads(source.read_text(encoding="utf-8"))
-    data["materials"][0]["alphaMode"] = alpha_mode
-    data["materials"][0]["doubleSided"] = double_sided
-    source.write_text(json.dumps(data), encoding="utf-8")
-    resource = {
-        **_cube_resource(),
-        "masked_graphics_pipeline_ids": ["masked_pipeline"],
-        "double_sided_graphics_pipeline_ids": override,
-    }
-    compiled = _compiler().compile_materials(resource, tmp_path / "manifest.json", tmp_path, tmp_path / "output")
-    material = next(item for item in _material_resources(compiled) if item["id"] == "cube.material.Cube")
-    assert material["graphics_pipeline_ids"] == expected
 
 
 @pytest.mark.parametrize("alpha_mode,double_sided,category", [

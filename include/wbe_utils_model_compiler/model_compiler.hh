@@ -51,7 +51,6 @@ public:
     pybind11::list compile_mesh(
         const std::filesystem::path& p_source_path,
         const std::string& p_resource_id,
-        const pybind11::list& p_graphics_pipeline_ids,
         const std::string& p_texture_output_dir,
         const std::filesystem::path& p_geometry_output_dir,
         const std::string& p_geometry_path_prefix,
@@ -97,17 +96,13 @@ public:
         unsigned int p_worker_count) const;
 
     /**
-     * @brief Compile source materials with optional masked and opaque double-sided pipeline overrides.
-     * @param p_double_sided_graphics_pipeline_ids Pipelines for opaque two-sided materials; empty uses the ordinary pipelines.
+     * @brief Compile source materials into material resource dictionaries.
      */
     pybind11::list compile_materials(
         const std::filesystem::path& p_source_path,
         const std::string& p_resource_id,
-        const pybind11::list& p_graphics_pipeline_ids,
-        const pybind11::list& p_masked_graphics_pipeline_ids,
         const std::string& p_texture_output_dir,
-        const std::filesystem::path& p_texture_output_root,
-        const pybind11::list& p_double_sided_graphics_pipeline_ids = pybind11::list()) const;
+        const std::filesystem::path& p_texture_output_root) const;
 };
 }
 
