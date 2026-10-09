@@ -116,21 +116,21 @@ resource = {
 
 resources = compiler.compile(
 	resource=resource,
-	manifest_path=Path("test-model/manifest.json"),
+	manifest_path=Path("test-model/manifest.toml"),
 	res_dir=Path("test-model"),
 	res_output_dir=Path("build/resources"),
 )
 
 mesh_resource = compiler.compile_mesh(
 	resource=resource,
-	manifest_path=Path("test-model/manifest.json"),
+	manifest_path=Path("test-model/manifest.toml"),
 	res_dir=Path("test-model"),
 	res_output_dir=Path("build/resources"),
 )
 
 material_resources = compiler.compile_materials(
 	resource=resource,
-	manifest_path=Path("test-model/manifest.json"),
+	manifest_path=Path("test-model/manifest.toml"),
 	res_dir=Path("test-model"),
 	res_output_dir=Path("build/resources"),
 )
@@ -216,6 +216,7 @@ Both `model` and `static_geometry` emit one mesh resource with id `<id>.mesh`:
 SubmeshInstances = {
 	"submeshes": [
 		{
+			"aabb": {"center": [float, float, float], "width": float, "height": float},
 			"vertices": {
 				"binary": {"binary_id": str, "start": int, "size": int},
 				"stride": int,
@@ -240,6 +241,9 @@ SubmeshInstances = {
 Each submesh draws instances `[first_instance, first_instance + instance_count)` of its category. Instances store
 `global_transform` as exactly 16 column-major floats. Ordinary models bake node transforms into their vertices, so every non-empty
 category holds one identity instance and each submesh draws it once. Static geometry preserves node transforms as instances.
+Each submesh's `aabb` is computed from its exported vertex positions: `center` is `[x, y, z]`, and `width` and `height`
+are the full X and Y extents. Bounds include coordinate conversion and vertex scaling. Ordinary model bounds include baked
+node transforms; static geometry bounds are local to the submesh, before its instance transforms.
 
 Ordinary models emit one geometry binary, `<id>.mesh.geometry`; static geometry emits separate `<id>.vertices` and `<id>.indices`
 binaries:

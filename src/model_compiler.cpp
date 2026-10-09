@@ -1222,7 +1222,32 @@ py::dict make_mesh_instance(const std::array<float, 16>& p_global_transform)
 py::dict make_mesh_submesh(
     const IntermediateSubmesh& p_submesh, const py::dict& p_geometry_views, size_t p_first_instance, size_t p_instance_count)
 {
+    if (p_submesh.vertices.empty())
+    {
+        throw std::runtime_error("Cannot compute bounds for a submesh without vertices: " + p_submesh.id);
+    }
+    std::array<float, 3> minimum = p_submesh.vertices.front().position;
+    std::array<float, 3> maximum = minimum;
+    for (const IntermediateVertex& vertex : p_submesh.vertices)
+    {
+        for (size_t axis = 0; axis < minimum.size(); ++axis)
+        {
+            minimum[axis] = std::min(minimum[axis], vertex.position[axis]);
+            maximum[axis] = std::max(maximum[axis], vertex.position[axis]);
+        }
+    }
+    py::list center;
+    for (size_t axis = 0; axis < minimum.size(); ++axis)
+    {
+        center.append((minimum[axis] + maximum[axis]) * 0.5F);
+    }
+    py::dict aabb;
+    aabb["center"] = center;
+    aabb["width"] = maximum[0] - minimum[0];
+    aabb["height"] = maximum[1] - minimum[1];
+
     py::dict result;
+    result["aabb"] = aabb;
     result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
     result["vertices"] = p_geometry_views["vertices"];
     result["indices"] = p_geometry_views["indices"];

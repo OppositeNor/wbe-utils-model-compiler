@@ -334,6 +334,45 @@ def test_compiler_returns_mesh_before_materials(tmp_path: Path) -> None:
     assert len(_texture_resources(compiled[2:])) + len(_material_resources(compiled[2:])) == len(compiled[2:])
 
 
+@pytest.mark.parametrize("p_source_type", ["model", "static_geometry"])
+@pytest.mark.parametrize("p_position_scale", [1.0, -2.0, 0.0])
+@pytest.mark.parametrize("p_convert_space", [False, True])
+def test_submesh_aabb_uses_exported_positions(
+    tmp_path: Path, p_source_type: str, p_position_scale: float, p_convert_space: bool
+) -> None:
+    source_path = tmp_path / "triangles.obj"
+    source_path.write_text(
+        "o positive\nv 2 3 4\nv 6 3 10\nv 2 9 4\nf 1 2 3\n"
+        "o negative\nv -10 -12 -14\nv -4 -12 -8\nv -10 -2 -14\nf 4 5 6\n",
+        encoding="utf-8",
+    )
+    resource = {
+        **_cube_resource(), "type": p_source_type, "file": str(source_path), "scale_vertex_pos": p_position_scale,
+    }
+    expected_bounds = [([4.0, 6.0, 7.0], 4.0, 6.0), ([-7.0, -7.0, -11.0], 6.0, 10.0)]
+    if p_convert_space:
+        resource["source_space"] = {"up": "+z", "right": "+x", "front": "-y"}
+        resource["target_space"] = {"up": "+y", "right": "-z", "front": "-x"}
+        expected_bounds = [([6.0, 7.0, -4.0], 6.0, 6.0), ([-7.0, -11.0, 7.0], 10.0, 6.0)]
+    compiler = _compiler()
+    output_dir = tmp_path / "output"
+    if p_source_type == "static_geometry":
+        resource["combine_nodes"] = False
+        resource["source_files"] = [str(source_path)]
+        mesh = compiler.compile_static_geometry(resource, tmp_path / "manifest.toml", tmp_path, output_dir)[2]
+    else:
+        mesh = compiler.compile_mesh(resource, tmp_path / "manifest.toml", tmp_path, output_dir)
+
+    submeshes = _submeshes(mesh)
+    assert len(submeshes) == 2
+    for submesh, (center, width, height) in zip(submeshes, expected_bounds, strict=True):
+        aabb = submesh["aabb"]
+        assert set(aabb) == {"center", "width", "height"}
+        assert aabb["center"] == pytest.approx([component * p_position_scale for component in center])
+        assert aabb["width"] == pytest.approx(width * abs(p_position_scale))
+        assert aabb["height"] == pytest.approx(height * abs(p_position_scale))
+
+
 def test_mesh_compilation_scales_positions_and_converts_between_coordinate_spaces(tmp_path: Path) -> None:
     compiler = _compiler()
     baseline_output_dir = tmp_path / "baseline"
@@ -383,6 +422,14 @@ def test_mesh_compilation_combines_node_instances_in_mesh_space(tmp_path: Path) 
     combined = compiler.compile_mesh(resource, source_path.parent / "manifest.json", source_path.parent, combined_output_dir)
 
     assert len(_submeshes(combined)) == 2
+    child_aabb = _submeshes(combined)[0]["aabb"]
+    assert child_aabb["center"] == pytest.approx([1.0, 6.0, 0.0], abs=3.0E-6)
+    assert child_aabb["width"] == pytest.approx(4.0)
+    assert child_aabb["height"] == pytest.approx(4.0)
+    instance_aabb = _submeshes(combined)[1]["aabb"]
+    assert instance_aabb["center"] == pytest.approx([0.0, 0.0, 4.0], abs=3.0E-6)
+    assert instance_aabb["width"] == pytest.approx(2.0)
+    assert instance_aabb["height"] == pytest.approx(2.0)
     baseline_positions = _vec3_section(
         _binary_path(baseline_output_dir, _submeshes(baseline)[0]), _submeshes(baseline)[0], "position")
     child_positions = _vec3_section(
@@ -732,6 +779,9 @@ def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) ->
     assert submesh["indices"]["binary"]["binary_id"] == index_binary["id"]
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == 2
+    assert submesh["aabb"]["center"] == pytest.approx([0.0, 0.0, 0.0], abs=2.0E-6)
+    assert submesh["aabb"]["width"] == pytest.approx(2.0)
+    assert submesh["aabb"]["height"] == pytest.approx(2.0)
     second_transform = opaque_mesh["instances"][1]["global_transform"]
     assert second_transform[12:15] == pytest.approx([0.0, 0.0, 4.0])
 
@@ -789,6 +839,26 @@ def test_compile_uses_cache_when_inputs_are_unchanged(tmp_path: Path, monkeypatc
     assert second_result == first_result
     cache_files = list(cache_dir.glob("*.json"))
     assert len(cache_files) == 1
+
+
+def test_compile_rebuilds_cached_mesh_without_aabb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = _compiler()
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+    compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    cache_path = next(cache_dir.glob("*.json"))
+    cache_record = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache_record["compiler_version"] = f"{wbe_utils_model_compiler.__version__}:mesh-categories-v1"
+    for submesh in _submeshes(cache_record["compiled_resources"][0]):
+        del submesh["aabb"]
+    cache_path.write_text(json.dumps(cache_record), encoding="utf-8")
+
+    compiled = compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+
+    assert compile_counts == {"mesh": 2, "static_geometry": 0, "materials": 2}
+    assert all("aabb" in submesh for submesh in _submeshes(compiled[0]))
 
 
 def test_compile_rebuilds_when_gltf_dependency_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
