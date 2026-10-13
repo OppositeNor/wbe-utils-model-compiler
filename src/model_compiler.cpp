@@ -24,6 +24,8 @@
 #include <future>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -53,7 +55,8 @@ struct IntermediateVertex
     std::array<float, 3> normal = {0.0F, 0.0F, 0.0F};
     std::array<float, 3> tangent = {0.0F, 0.0F, 0.0F};
     std::array<float, 3> bitangent = {0.0F, 0.0F, 0.0F};
-    std::vector<std::pair<int, float>> bones;
+    std::array<int32_t, 4> joint_binding_ids = {0, 0, 0, 0};
+    std::array<float, 4> joint_binding_weights = {0.0F, 0.0F, 0.0F, 0.0F};
 };
 
 struct IntermediateSubmesh
@@ -66,6 +69,20 @@ struct IntermediateSubmesh
     bool has_uv = false;
     bool has_normal = false;
     bool has_tangent_space = false;
+    bool has_joint_bindings = false;
+};
+
+struct IntermediateJoint
+{
+    int32_t parent_index = -1;
+    std::array<float, 16> bind_local_transform = {};
+};
+
+// Joints are stored parent-before-child, rooted at the scene root node. An empty joint list means the model is not skinned.
+struct IntermediateSkeleton
+{
+    std::vector<IntermediateJoint> joints;
+    std::unordered_map<const aiNode*, int32_t> node_joint_indices;
 };
 
 struct IntermediateMaterialTexture
@@ -90,6 +107,7 @@ struct IntermediateScene
 {
     std::vector<IntermediateSubmesh> submeshes;
     std::vector<IntermediateMaterial> materials;
+    IntermediateSkeleton skeleton;
 };
 
 struct StaticGeometryPlacement
@@ -246,24 +264,6 @@ py::dict make_uv(const std::array<float, 2>& p_value)
     py::dict result;
     result["u"] = p_value[0];
     result["v"] = p_value[1];
-    return result;
-}
-
-py::object make_bones(const std::vector<std::pair<int, float>>& p_bones)
-{
-    if (p_bones.empty())
-    {
-        return py::none();
-    }
-
-    py::list result;
-    for (const auto& [bone_index, bone_weight] : p_bones)
-    {
-        py::dict bone;
-        bone["index"] = bone_index;
-        bone["weight"] = bone_weight;
-        result.append(bone);
-    }
     return result;
 }
 
@@ -576,23 +576,82 @@ bool add_rma_texture(const aiMaterial* p_material,
     return true;
 }
 
-void apply_bones(const aiMesh* p_mesh, std::vector<IntermediateVertex>& p_vertices)
+constexpr size_t MAX_JOINT_BINDINGS = 4;
+
+const aiNode* find_bone_node(const aiScene* p_scene, const aiBone* p_bone)
 {
+    const aiNode* result = p_scene->mRootNode->FindNode(p_bone->mName);
+    if (result == nullptr)
+    {
+        throw std::runtime_error("Assimp bone does not reference a scene node: " + std::string(p_bone->mName.C_Str()));
+    }
+    return result;
+}
+
+int32_t nearest_joint_index(const aiNode* p_node, const IntermediateSkeleton& p_skeleton)
+{
+    for (const aiNode* node = p_node; node != nullptr; node = node->mParent)
+    {
+        const auto found = p_skeleton.node_joint_indices.find(node);
+        if (found != p_skeleton.node_joint_indices.end())
+        {
+            return found->second;
+        }
+    }
+    throw std::runtime_error("Model node is not attached to the skeleton: " + std::string(p_node->mName.C_Str()));
+}
+
+// Keep the four strongest influences per vertex and normalize them. Vertices without influences, including every vertex
+// of an unskinned mesh, follow the nearest joint at or above the mesh node rigidly.
+void apply_joint_bindings(const aiScene* p_scene,
+    const aiMesh* p_mesh,
+    const aiNode* p_node,
+    const IntermediateSkeleton& p_skeleton,
+    std::vector<IntermediateVertex>& p_vertices)
+{
+    std::vector<std::vector<std::pair<int32_t, float>>> influences(p_vertices.size());
     for (unsigned int bone_index = 0; bone_index < p_mesh->mNumBones; ++bone_index)
     {
         const aiBone* bone = p_mesh->mBones[bone_index];
+        const int32_t joint_index = p_skeleton.node_joint_indices.at(find_bone_node(p_scene, bone));
         for (unsigned int weight_index = 0; weight_index < bone->mNumWeights; ++weight_index)
         {
             const aiVertexWeight& weight = bone->mWeights[weight_index];
             if (weight.mVertexId >= p_vertices.size())
             {
-                continue;
+                throw std::runtime_error("Assimp bone weight references an out-of-range vertex: " + std::string(bone->mName.C_Str()));
             }
-            auto& vertex_bones = p_vertices[weight.mVertexId].bones;
-            if (vertex_bones.size() < 4)
+            if (weight.mWeight > 0.0F)
             {
-                vertex_bones.emplace_back(static_cast<int>(bone_index), weight.mWeight);
+                influences[weight.mVertexId].emplace_back(joint_index, weight.mWeight);
             }
+        }
+    }
+
+    const int32_t fallback_joint_index = nearest_joint_index(p_node, p_skeleton);
+    for (size_t vertex_index = 0; vertex_index < p_vertices.size(); ++vertex_index)
+    {
+        std::vector<std::pair<int32_t, float>>& vertex_influences = influences[vertex_index];
+        IntermediateVertex& vertex = p_vertices[vertex_index];
+        if (vertex_influences.empty())
+        {
+            vertex.joint_binding_ids = {fallback_joint_index, 0, 0, 0};
+            vertex.joint_binding_weights = {1.0F, 0.0F, 0.0F, 0.0F};
+            continue;
+        }
+        std::ranges::stable_sort(vertex_influences, [](const auto& p_left, const auto& p_right) {
+            return p_left.second > p_right.second;
+        });
+        const size_t binding_count = std::min(vertex_influences.size(), MAX_JOINT_BINDINGS);
+        float total_weight = 0.0F;
+        for (size_t binding_index = 0; binding_index < binding_count; ++binding_index)
+        {
+            total_weight += vertex_influences[binding_index].second;
+        }
+        for (size_t binding_index = 0; binding_index < binding_count; ++binding_index)
+        {
+            vertex.joint_binding_ids[binding_index] = vertex_influences[binding_index].first;
+            vertex.joint_binding_weights[binding_index] = vertex_influences[binding_index].second / total_weight;
         }
     }
 }
@@ -602,8 +661,10 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
     const std::string& p_resource_id,
     unsigned int p_mesh_index,
     unsigned int p_mesh_instance_index,
+    const aiNode* p_node,
     const aiMatrix4x4& p_node_transform,
-    const VertexTransform& p_transform)
+    const VertexTransform& p_transform,
+    const IntermediateSkeleton& p_skeleton)
 {
     IntermediateSubmesh result;
     result.id = submesh_id_for(p_mesh, p_resource_id, p_mesh_index);
@@ -657,7 +718,11 @@ IntermediateSubmesh import_submesh(const aiScene* p_scene,
         result.vertices.push_back(vertex);
     }
 
-    apply_bones(p_mesh, result.vertices);
+    result.has_joint_bindings = !p_skeleton.joints.empty();
+    if (result.has_joint_bindings)
+    {
+        apply_joint_bindings(p_scene, p_mesh, p_node, p_skeleton, result.vertices);
+    }
 
     for (unsigned int face_index = 0; face_index < p_mesh->mNumFaces; ++face_index)
     {
@@ -686,7 +751,9 @@ IntermediateSubmesh import_static_geometry_submesh(const aiScene* p_scene,
     unsigned int p_mesh_index,
     const VertexTransform& p_transform)
 {
-    IntermediateSubmesh result = import_submesh(p_scene, p_mesh, p_resource_id, p_mesh_index, 0, aiMatrix4x4(), p_transform);
+    // Static geometry is not skinned, so it never carries joint bindings.
+    IntermediateSubmesh result = import_submesh(
+        p_scene, p_mesh, p_resource_id, p_mesh_index, 0, p_scene->mRootNode, aiMatrix4x4(), p_transform, IntermediateSkeleton{});
     result.id = static_geometry_submesh_id_for(p_mesh, p_resource_id, p_mesh_index);
     return result;
 }
@@ -756,6 +823,151 @@ void import_static_geometry_node(const aiScene* p_scene,
     }
 }
 
+// Record each bone's bind-pose global transform from its offset matrix, which maps the mesh node space to bone space. The
+// first mesh that references a bone defines its bind pose.
+void collect_bone_bind_transforms(const aiScene* p_scene,
+    const aiNode* p_node,
+    const aiMatrix4x4& p_parent_transform,
+    std::unordered_map<const aiNode*, aiMatrix4x4>& p_bone_bind_transforms)
+{
+    const aiMatrix4x4 node_transform = p_parent_transform * p_node->mTransformation;
+    for (unsigned int node_mesh_index = 0; node_mesh_index < p_node->mNumMeshes; ++node_mesh_index)
+    {
+        const unsigned int mesh_index = p_node->mMeshes[node_mesh_index];
+        if (mesh_index >= p_scene->mNumMeshes)
+        {
+            throw std::runtime_error("Assimp model node references an out-of-range mesh index.");
+        }
+        const aiMesh* mesh = p_scene->mMeshes[mesh_index];
+        for (unsigned int bone_index = 0; bone_index < mesh->mNumBones; ++bone_index)
+        {
+            const aiBone* bone = mesh->mBones[bone_index];
+            aiMatrix4x4 bone_space_to_mesh_space = bone->mOffsetMatrix;
+            bone_space_to_mesh_space.Inverse();
+            p_bone_bind_transforms.try_emplace(find_bone_node(p_scene, bone), node_transform * bone_space_to_mesh_space);
+        }
+    }
+
+    for (unsigned int child_index = 0; child_index < p_node->mNumChildren; ++child_index)
+    {
+        collect_bone_bind_transforms(p_scene, p_node->mChildren[child_index], node_transform, p_bone_bind_transforms);
+    }
+}
+
+// Conjugate a source-space transform by the source-to-target change of basis so it acts on converted positions.
+std::array<float, 16> skeleton_transform_to_column_major(const aiMatrix4x4& p_source_transform, const VertexTransform& p_transform)
+{
+    std::array<std::array<float, 3>, 3> linear = {};
+    for (size_t row = 0; row < 3; ++row)
+    {
+        for (size_t column = 0; column < 3; ++column)
+        {
+            for (size_t source_row = 0; source_row < 3; ++source_row)
+            {
+                for (size_t source_column = 0; source_column < 3; ++source_column)
+                {
+                    linear[row][column] += p_transform.basis[row][source_row] *
+                                           p_source_transform[static_cast<unsigned int>(source_row)][source_column] *
+                                           p_transform.basis[column][source_column];
+                }
+            }
+        }
+    }
+    std::array<float, 3> translation =
+        transform_vector({p_source_transform.a4, p_source_transform.b4, p_source_transform.c4}, p_transform);
+    for (float& component : translation)
+    {
+        component *= p_transform.position_scale;
+    }
+    return {linear[0][0],
+        linear[1][0],
+        linear[2][0],
+        0.0F,
+        linear[0][1],
+        linear[1][1],
+        linear[2][1],
+        0.0F,
+        linear[0][2],
+        linear[1][2],
+        linear[2][2],
+        0.0F,
+        translation[0],
+        translation[1],
+        translation[2],
+        1.0F};
+}
+
+void append_skeleton_joints(const aiNode* p_node,
+    const aiMatrix4x4& p_parent_node_transform,
+    int32_t p_parent_index,
+    const aiMatrix4x4& p_parent_bind_transform,
+    const std::unordered_map<const aiNode*, aiMatrix4x4>& p_bone_bind_transforms,
+    const std::unordered_set<const aiNode*>& p_joint_nodes,
+    const VertexTransform& p_transform,
+    IntermediateSkeleton& p_skeleton)
+{
+    // Every ancestor of a joint is a joint, so no descendant of a non-joint node can be one.
+    if (!p_joint_nodes.contains(p_node))
+    {
+        return;
+    }
+    const aiMatrix4x4 node_transform = p_parent_node_transform * p_node->mTransformation;
+    const auto bone_bind_transform = p_bone_bind_transforms.find(p_node);
+    const aiMatrix4x4 bind_transform =
+        bone_bind_transform != p_bone_bind_transforms.end() ? bone_bind_transform->second : node_transform;
+    aiMatrix4x4 bind_local_transform = bind_transform;
+    if (p_parent_index >= 0)
+    {
+        aiMatrix4x4 parent_bind_inverse = p_parent_bind_transform;
+        parent_bind_inverse.Inverse();
+        bind_local_transform = parent_bind_inverse * bind_transform;
+    }
+
+    const auto joint_index = static_cast<int32_t>(p_skeleton.joints.size());
+    p_skeleton.joints.push_back(IntermediateJoint{
+        .parent_index = p_parent_index,
+        .bind_local_transform = skeleton_transform_to_column_major(bind_local_transform, p_transform),
+    });
+    p_skeleton.node_joint_indices.emplace(p_node, joint_index);
+    for (unsigned int child_index = 0; child_index < p_node->mNumChildren; ++child_index)
+    {
+        append_skeleton_joints(p_node->mChildren[child_index],
+            node_transform,
+            joint_index,
+            bind_transform,
+            p_bone_bind_transforms,
+            p_joint_nodes,
+            p_transform,
+            p_skeleton);
+    }
+}
+
+// Build the skeleton from every bone node and its ancestors, rooted at the scene root so the joints form one tree.
+IntermediateSkeleton import_skeleton(const aiScene* p_scene, const VertexTransform& p_transform)
+{
+    std::unordered_map<const aiNode*, aiMatrix4x4> bone_bind_transforms;
+    collect_bone_bind_transforms(p_scene, p_scene->mRootNode, aiMatrix4x4(), bone_bind_transforms);
+    IntermediateSkeleton result;
+    if (bone_bind_transforms.empty())
+    {
+        return result;
+    }
+
+    std::unordered_set<const aiNode*> joint_nodes;
+    for (const auto& [bone_node, bind_transform] : bone_bind_transforms)
+    {
+        // Stop at the first ancestor already marked, since its own ancestors were marked with it.
+        const aiNode* node = bone_node;
+        while (node != nullptr && joint_nodes.insert(node).second)
+        {
+            node = node->mParent;
+        }
+    }
+    append_skeleton_joints(
+        p_scene->mRootNode, aiMatrix4x4(), -1, aiMatrix4x4(), bone_bind_transforms, joint_nodes, p_transform, result);
+    return result;
+}
+
 void import_node(const aiScene* p_scene,
     const aiNode* p_node,
     const aiMatrix4x4& p_parent_transform,
@@ -773,8 +985,15 @@ void import_node(const aiScene* p_scene,
             throw std::runtime_error("Assimp model node references an out-of-range mesh index.");
         }
         const unsigned int mesh_instance_index = p_mesh_instance_counts[mesh_index]++;
-        p_result.submeshes.push_back(import_submesh(
-            p_scene, p_scene->mMeshes[mesh_index], p_resource_id, mesh_index, mesh_instance_index, node_transform, p_transform));
+        p_result.submeshes.push_back(import_submesh(p_scene,
+            p_scene->mMeshes[mesh_index],
+            p_resource_id,
+            mesh_index,
+            mesh_instance_index,
+            p_node,
+            node_transform,
+            p_transform,
+            p_result.skeleton));
     }
 
     for (unsigned int child_index = 0; child_index < p_node->mNumChildren; ++child_index)
@@ -886,6 +1105,7 @@ IntermediateScene import_scene(const std::filesystem::path& p_source_path,
     {
         throw std::runtime_error("Assimp loaded a model without a root node.");
     }
+    result.skeleton = import_skeleton(scene, p_transform);
     std::vector<unsigned int> mesh_instance_counts(scene->mNumMeshes, 0);
     import_node(scene, scene->mRootNode, aiMatrix4x4(), p_resource_id, p_transform, mesh_instance_counts, result);
 
@@ -1096,6 +1316,40 @@ py::dict write_submesh_geometry(const IntermediateSubmesh& p_submesh,
     return result;
 }
 
+// Joint bindings are interleaved ivec4 joint ids followed by vec4 weights.
+py::dict write_submesh_joint_bindings(const IntermediateSubmesh& p_submesh,
+    std::ofstream& p_output_file,
+    const std::filesystem::path& p_output_path,
+    size_t& p_offset,
+    const std::string& p_binary_id)
+{
+    py::list attributes;
+    attributes.append(make_vertex_attribute("joint_binding_ids", "ivec4", 0));
+    attributes.append(make_vertex_attribute("joint_binding_weights", "vec4", 4 * sizeof(int32_t)));
+    const size_t stride = 4 * sizeof(int32_t) + 4 * sizeof(float);
+
+    const size_t start = p_offset;
+    for (const IntermediateVertex& vertex : p_submesh.vertices)
+    {
+        write_bytes(p_output_file,
+            vertex.joint_binding_ids.data(),
+            vertex.joint_binding_ids.size() * sizeof(int32_t),
+            p_offset,
+            p_output_path);
+        write_bytes(p_output_file,
+            vertex.joint_binding_weights.data(),
+            vertex.joint_binding_weights.size() * sizeof(float),
+            p_offset,
+            p_output_path);
+    }
+
+    py::dict result;
+    result["binary"] = make_binary_view(p_binary_id, start, p_offset - start);
+    result["stride"] = stride;
+    result["attributes"] = attributes;
+    return result;
+}
+
 py::dict write_static_submesh_geometry(const IntermediateSubmesh& p_submesh,
     std::ofstream& p_vertex_output_file,
     const std::filesystem::path& p_vertex_output_path,
@@ -1251,6 +1505,10 @@ py::dict make_mesh_submesh(
     result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
     result["vertices"] = p_geometry_views["vertices"];
     result["indices"] = p_geometry_views["indices"];
+    if (p_geometry_views.contains("joint_bindings"))
+    {
+        result["joint_bindings"] = p_geometry_views["joint_bindings"];
+    }
     result["first_instance"] = p_first_instance;
     result["instance_count"] = p_instance_count;
     return result;
@@ -1273,7 +1531,8 @@ py::dict to_python(const MeshCategoryOutput& p_category)
 py::dict make_mesh(const std::string& p_id,
     const MeshCategoryOutput& p_opaque,
     const MeshCategoryOutput& p_masked,
-    const MeshCategoryOutput& p_double_sided_opaque)
+    const MeshCategoryOutput& p_double_sided_opaque,
+    const std::string& p_skeleton_id = {})
 {
     py::dict result;
     result["id"] = p_id;
@@ -1281,6 +1540,33 @@ py::dict make_mesh(const std::string& p_id,
     result["opaque_instances"] = to_python(p_opaque);
     result["masked_instances"] = to_python(p_masked);
     result["double_sided_opaque_instances"] = to_python(p_double_sided_opaque);
+    if (!p_skeleton_id.empty())
+    {
+        result["skeleton_id"] = p_skeleton_id;
+    }
+    return result;
+}
+
+py::dict skeleton_to_python(const IntermediateSkeleton& p_skeleton, const std::string& p_skeleton_id)
+{
+    py::list joints;
+    for (const IntermediateJoint& joint : p_skeleton.joints)
+    {
+        py::list bind_local_transform;
+        for (float value : joint.bind_local_transform)
+        {
+            bind_local_transform.append(value);
+        }
+        py::dict joint_dict;
+        joint_dict["parent_index"] = joint.parent_index;
+        joint_dict["bind_local_transform"] = bind_local_transform;
+        joints.append(joint_dict);
+    }
+
+    py::dict result;
+    result["id"] = p_skeleton_id;
+    result["type"] = "skeleton";
+    result["joints"] = joints;
     return result;
 }
 
@@ -1311,6 +1597,22 @@ py::list mesh_resources_to_python(const IntermediateScene& p_scene,
     const std::string geometry_path = geometry_path_for(file_name, p_geometry_path_prefix);
     const std::string binary_id = p_mesh_id + ".geometry";
     size_t offset = 0;
+
+    const bool has_skeleton = !p_scene.skeleton.joints.empty();
+    const std::string joint_bindings_file_name = sanitize_file_stem(p_mesh_id) + ".joint_bindings.bin";
+    const std::filesystem::path joint_bindings_output_path = p_geometry_output_dir / joint_bindings_file_name;
+    const std::string joint_bindings_binary_id = p_mesh_id + ".joint_bindings";
+    std::ofstream joint_bindings_output_file;
+    if (has_skeleton)
+    {
+        joint_bindings_output_file.open(joint_bindings_output_path, std::ios::binary);
+        if (!joint_bindings_output_file.is_open())
+        {
+            throw std::runtime_error(
+                "Failed to open model joint binding binary for writing: " + joint_bindings_output_path.generic_string());
+        }
+    }
+    size_t joint_bindings_offset = 0;
     // Node transforms are baked into the vertices, so every category draws its submeshes with one identity instance.
     constexpr std::array<float, 16> IDENTITY_TRANSFORM = {
         1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
@@ -1320,7 +1622,12 @@ py::list mesh_resources_to_python(const IntermediateScene& p_scene,
     bool warned_blend = false;
     for (const IntermediateSubmesh& submesh : p_scene.submeshes)
     {
-        const py::dict geometry_views = write_submesh_geometry(submesh, output_file, output_path, offset, binary_id);
+        py::dict geometry_views = write_submesh_geometry(submesh, output_file, output_path, offset, binary_id);
+        if (submesh.has_joint_bindings)
+        {
+            geometry_views["joint_bindings"] = write_submesh_joint_bindings(
+                submesh, joint_bindings_output_file, joint_bindings_output_path, joint_bindings_offset, joint_bindings_binary_id);
+        }
         const MeshCategory category = classify_submesh(submesh, p_scene.materials, warned_blend);
         if (category == MeshCategory::OMITTED)
         {
@@ -1334,9 +1641,15 @@ py::list mesh_resources_to_python(const IntermediateScene& p_scene,
         target.submeshes.append(make_mesh_submesh(submesh, geometry_views, 0, 1));
     }
 
+    const std::string skeleton_id = has_skeleton ? p_mesh_id + ".skeleton" : std::string();
     py::list result;
-    result.append(make_mesh(p_mesh_id, opaque, masked, double_sided_opaque));
+    result.append(make_mesh(p_mesh_id, opaque, masked, double_sided_opaque, skeleton_id));
     result.append(binary_to_python(binary_id, geometry_path));
+    if (has_skeleton)
+    {
+        result.append(binary_to_python(joint_bindings_binary_id, geometry_path_for(joint_bindings_file_name, p_geometry_path_prefix)));
+        result.append(skeleton_to_python(p_scene.skeleton, skeleton_id));
+    }
     return result;
 }
 

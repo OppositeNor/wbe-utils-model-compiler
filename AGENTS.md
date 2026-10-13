@@ -154,6 +154,7 @@ Run tests with `python build.py test`.
 ## Geometry Output
 
 - `compile_mesh` emits a mesh resource followed by one `binary` resource. Submeshes reference that binary through `vertices` and `indices` views; runtime output must not emit `vertices_data`, `indices_data`, `geometry_path`, or `geometry_sections`.
+- Skinned models additionally emit a separate joint-binding `binary` and a `skeleton` resource after the geometry binary. The mesh declares `skeleton_id`, and every submesh references the joint-binding binary through a `joint_bindings` view with `ivec4` `joint_binding_ids` and `vec4` `joint_binding_weights`. Skeleton joints are parent-before-child with joint 0 as the only root.
 - Geometry sidecar binaries are raw interleaved vertex payloads followed by `uint32` indices with no file header.
 - Assimp tangent-space generation is enabled. Preserve tangent and bitangent export when changing import flags or intermediate vertex fields.
 - `geometry_output_dir` is source-only and resource-root-relative. Do not leak it into runtime resource dictionaries.

@@ -137,7 +137,7 @@ material_resources = compiler.compile_materials(
 ```
 
 `compile` returns mesh or static-geometry resources first, followed by material resources. Ordinary models emit a mesh resource
-and one binary resource before materials. Static geometry emits vertex and index binary resources and one mesh resource before
+and one binary resource before materials; skinned models follow them with a joint-binding binary and a skeleton resource. Static geometry emits vertex and index binary resources and one mesh resource before
 materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
 remain available when only one output category is needed.
 
@@ -211,6 +211,7 @@ Both `model` and `static_geometry` emit one mesh resource with id `<id>.mesh`:
 	"opaque_instances": SubmeshInstances,
 	"masked_instances": SubmeshInstances,
 	"double_sided_opaque_instances": SubmeshInstances,
+	"skeleton_id": str,  # skinned models only
 }
 
 SubmeshInstances = {
@@ -229,6 +230,14 @@ SubmeshInstances = {
 				],
 			},
 			"indices": {"binary": {"binary_id": str, "start": int, "size": int}},
+			"joint_bindings": {  # skinned models only
+				"binary": {"binary_id": str, "start": int, "size": int},
+				"stride": 32,
+				"attributes": [
+					{"role": "joint_binding_ids", "type": "ivec4", "offset": 0},
+					{"role": "joint_binding_weights", "type": "vec4", "offset": 16},
+				],
+			},
 			"material_id": str | None,
 			"first_instance": int,
 			"instance_count": int,
@@ -252,7 +261,30 @@ binaries:
 {"id": str, "type": "binary", "path": str}
 ```
 
-Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex attribute values and `uint32` indices with no file header. View metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` attributes when tangent data is available for the source mesh.
+Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex attribute values and `uint32` indices with no file header.
+
+## Skeleton Output
+
+An ordinary model whose meshes reference Assimp bones is skinned. Its mesh declares `skeleton_id`, and the compiler emits a
+`<id>.mesh.joint_bindings` binary and a skeleton resource after the geometry binary:
+
+```python
+{
+	"id": "<id>.mesh.skeleton",
+	"type": "skeleton",
+	"joints": [{"parent_index": int, "bind_local_transform": list[float]}],
+}
+```
+
+The joints are every bone node and all of its ancestors, rooted at the scene root, in depth-first order: joint 0 is the only root
+(`parent_index: -1`), and every other parent precedes its child. `bind_local_transform` is 16 column-major floats relative to the
+parent joint (the mesh space for the root). Bone bind poses come from the Assimp offset matrices; other joints use their node
+transforms. Joint transforms are converted with the same coordinate conversion and vertex scaling as positions.
+
+Every submesh of a skinned model has `joint_bindings`, one entry per vertex in the joint-binding binary: `int32` joint indices
+followed by `float32` weights. Each vertex keeps its four strongest influences, normalized to sum to one; unused slots hold joint 0
+with weight 0. Vertices without influences, including all vertices of unskinned meshes in a skinned model, are bound with weight 1
+to the nearest joint at or above their mesh node. Bone names that match no scene node fail compilation. View metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` attributes when tangent data is available for the source mesh.
 
 ## Material Resource Output
 

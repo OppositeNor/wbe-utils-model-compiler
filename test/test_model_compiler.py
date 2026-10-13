@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 import shutil
@@ -296,6 +297,8 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert "indices_data" not in submesh
     assert "geometry_path" not in submesh
     assert "geometry_sections" not in submesh
+    assert "joint_bindings" not in submesh
+    assert "skeleton_id" not in compiled
     geometry_path = _binary_path(tmp_path, submesh)
     assert geometry_path.is_file()
 
@@ -792,6 +795,306 @@ def test_static_geometry_rejects_combine_nodes(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="does not support combine_nodes"):
         compiler.compile_static_geometry(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+
+def _write_skinned_gltf(p_directory: Path) -> Path:
+    """Write a quad skinned to a Hip -> Spine chain and an unskinned triangle parented under Spine."""
+    half_turn = 0.7071067811865476
+    sections: list[tuple[bytes, int]] = [
+        (struct.pack("<12f", 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 1.0, 2.0, 0.0), 0),
+        (struct.pack("<6H", 0, 1, 2, 2, 1, 3), 34963),
+        (struct.pack("<16H", 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0), 34962),
+        (struct.pack("<16f", 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.75, 0.0, 0.0), 34962),
+        (struct.pack("<9f", 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0), 34962),
+        (struct.pack("<3H", 0, 1, 2), 34963),
+        # Inverse bind matrices of Hip at T(0, 1, 0) and Spine at T(0, 2, 0) * Rz(90 degrees), column-major.
+        (struct.pack("<32f",
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0,
+            0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -2.0, 0.0, 0.0, 1.0), 0),
+    ]
+    payload = bytearray()
+    buffer_views: list[dict[str, Any]] = []
+    for data, target in sections:
+        view: dict[str, Any] = {"buffer": 0, "byteOffset": len(payload), "byteLength": len(data)}
+        if target:
+            view["target"] = target
+        buffer_views.append(view)
+        payload.extend(data)
+        payload.extend(b"\0" * (-len(payload) % 4))
+    accessors = [
+        {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 2.0, 0.0]},
+        {"bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR"},
+        {"bufferView": 2, "componentType": 5123, "count": 4, "type": "VEC4"},
+        {"bufferView": 3, "componentType": 5126, "count": 4, "type": "VEC4"},
+        {"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [0.5, 0.5, 0.0]},
+        {"bufferView": 5, "componentType": 5123, "count": 3, "type": "SCALAR"},
+        {"bufferView": 6, "componentType": 5126, "count": 2, "type": "MAT4"},
+    ]
+    source_data = {
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [
+            {"name": "Root", "children": [1, 3]},
+            {"name": "Hip", "translation": [0.0, 1.0, 0.0], "children": [2]},
+            {"name": "Spine", "translation": [0.0, 1.0, 0.0], "rotation": [0.0, 0.0, half_turn, half_turn], "children": [4]},
+            {"name": "Skinned", "mesh": 0, "skin": 0},
+            {"name": "Rigid", "mesh": 1, "translation": [1.0, 0.0, 0.0]},
+        ],
+        "meshes": [
+            {"name": "Skinned", "primitives": [
+                {"attributes": {"POSITION": 0, "JOINTS_0": 2, "WEIGHTS_0": 3}, "indices": 1},
+            ]},
+            {"name": "Rigid", "primitives": [{"attributes": {"POSITION": 4}, "indices": 5}]},
+        ],
+        "skins": [{"joints": [1, 2], "inverseBindMatrices": 6}],
+        "accessors": accessors,
+        "bufferViews": buffer_views,
+        "buffers": [{
+            "byteLength": len(payload),
+            "uri": "data:application/octet-stream;base64," + base64.b64encode(bytes(payload)).decode("ascii"),
+        }],
+    }
+    p_directory.mkdir(parents=True, exist_ok=True)
+    source_path = p_directory / "skinned.gltf"
+    source_path.write_text(json.dumps(source_data), encoding="utf-8")
+    return source_path
+
+
+def _transform_point(p_matrix: list[float], p_point: tuple[float, float, float]) -> tuple[float, float, float]:
+    return tuple(
+        p_matrix[row] * p_point[0] + p_matrix[4 + row] * p_point[1] + p_matrix[8 + row] * p_point[2] + p_matrix[12 + row]
+        for row in range(3))
+
+
+def _multiply_matrices(p_left: list[float], p_right: list[float]) -> list[float]:
+    return [
+        sum(p_left[k * 4 + row] * p_right[column * 4 + k] for k in range(4))
+        for column in range(4) for row in range(4)
+    ]
+
+
+def _skeleton_global_bind_transforms(p_skeleton: dict[str, Any]) -> list[list[float]]:
+    result: list[list[float]] = []
+    for joint in p_skeleton["joints"]:
+        parent_index = joint["parent_index"]
+        local = joint["bind_local_transform"]
+        result.append(local if parent_index < 0 else _multiply_matrices(result[parent_index], local))
+    return result
+
+
+def _joint_bindings(p_output_dir: Path, p_submesh: dict[str, Any]) -> list[tuple[tuple[int, ...], tuple[float, ...]]]:
+    view = p_submesh["joint_bindings"]
+    attributes = {attribute["role"]: attribute for attribute in view["attributes"]}
+    data = (p_output_dir / f"{view['binary']['binary_id']}.bin").read_bytes()
+    result: list[tuple[tuple[int, ...], tuple[float, ...]]] = []
+    start = view["binary"]["start"]
+    for entry_start in range(start, start + view["binary"]["size"], view["stride"]):
+        ids = struct.unpack_from("<4i", data, entry_start + attributes["joint_binding_ids"]["offset"])
+        weights = struct.unpack_from("<4f", data, entry_start + attributes["joint_binding_weights"]["offset"])
+        result.append((ids, weights))
+    return result
+
+
+def _skinned_resource(p_source_path: Path) -> dict[str, object]:
+    return {**_cube_resource(), "id": "skinned", "file": p_source_path.as_posix()}
+
+
+def test_mesh_compilation_emits_skeleton_and_joint_bindings(tmp_path: Path) -> None:
+    source_path = _write_skinned_gltf(tmp_path / "source")
+    output_dir = tmp_path / "output"
+
+    compiled = _compiler()._compile_mesh_resources(_skinned_resource(source_path), tmp_path / "manifest.toml", tmp_path, output_dir)
+
+    assert [resource["type"] for resource in compiled] == ["mesh", "binary", "binary", "skeleton"]
+    mesh, geometry_binary, joint_bindings_binary, skeleton = compiled
+    assert mesh["skeleton_id"] == skeleton["id"] == "skinned.mesh.skeleton"
+    assert geometry_binary["id"] == "skinned.mesh.geometry"
+    assert joint_bindings_binary == {
+        "id": "skinned.mesh.joint_bindings", "type": "binary", "path": "skinned.mesh.joint_bindings.bin"}
+    assert (output_dir / joint_bindings_binary["path"]).is_file()
+
+    joints = skeleton["joints"]
+    assert joints[0]["parent_index"] == -1
+    for joint_index, joint in enumerate(joints[1:], start=1):
+        assert 0 <= joint["parent_index"] < joint_index
+        assert len(joint["bind_local_transform"]) == 16
+    global_binds = _skeleton_global_bind_transforms(skeleton)
+    joint_origins = [_transform_point(transform, (0.0, 0.0, 0.0)) for transform in global_binds]
+    hip_index = next(index for index, origin in enumerate(joint_origins) if origin == pytest.approx((0.0, 1.0, 0.0)))
+    spine_index = next(index for index, origin in enumerate(joint_origins) if origin == pytest.approx((0.0, 2.0, 0.0)))
+    assert joints[spine_index]["parent_index"] == hip_index
+    assert _transform_point(global_binds[spine_index], (1.0, 0.0, 0.0)) == pytest.approx((0.0, 3.0, 0.0), abs=1.0E-6)
+
+    submeshes = _submeshes(mesh)
+    assert len(submeshes) == 2
+    expected_bindings = {
+        (0.0, 0.0, 0.0): ((hip_index, 0, 0, 0), (1.0, 0.0, 0.0, 0.0)),
+        (1.0, 0.0, 0.0): ((hip_index, 0, 0, 0), (1.0, 0.0, 0.0, 0.0)),
+        (0.0, 2.0, 0.0): ((spine_index, 0, 0, 0), (1.0, 0.0, 0.0, 0.0)),
+        (1.0, 2.0, 0.0): ((spine_index, hip_index, 0, 0), (0.75, 0.25, 0.0, 0.0)),
+    }
+    for submesh in submeshes:
+        view = submesh["joint_bindings"]
+        assert view["stride"] == 32
+        assert view["attributes"] == [
+            {"role": "joint_binding_ids", "type": "ivec4", "offset": 0},
+            {"role": "joint_binding_weights", "type": "vec4", "offset": 16},
+        ]
+        assert view["binary"]["binary_id"] == joint_bindings_binary["id"]
+        positions = _vec3_section(_binary_path(output_dir, submesh), submesh, "position")
+        bindings = _joint_bindings(output_dir, submesh)
+        assert len(bindings) == len(positions)
+        for position, (ids, weights) in zip(positions, bindings, strict=True):
+            if len(positions) == 4:
+                expected_ids, expected_weights = expected_bindings[tuple(round(component, 4) + 0.0 for component in position)]
+            else:
+                # The unskinned triangle follows its nearest ancestor joint rigidly.
+                expected_ids, expected_weights = (spine_index, 0, 0, 0), (1.0, 0.0, 0.0, 0.0)
+            assert ids == expected_ids
+            assert weights == pytest.approx(expected_weights)
+
+
+def test_mesh_compilation_converts_skeleton_between_coordinate_spaces(tmp_path: Path) -> None:
+    source_path = _write_skinned_gltf(tmp_path / "source")
+    compiler = _compiler()
+    baseline = compiler._compile_mesh_resources(
+        _skinned_resource(source_path), tmp_path / "manifest.toml", tmp_path, tmp_path / "baseline")[3]
+    resource = {
+        **_skinned_resource(source_path),
+        "scale_vertex_pos": 2.5,
+        "source_space": {"up": "+z", "right": "+x", "front": "-y"},
+        "target_space": {"up": "+y", "right": "-z", "front": "-x"},
+    }
+    converted = compiler._compile_mesh_resources(resource, tmp_path / "manifest.toml", tmp_path, tmp_path / "converted")[3]
+
+    def convert_point(p_point: tuple[float, ...]) -> tuple[float, float, float]:
+        return (p_point[1] * 2.5, p_point[2] * 2.5, -p_point[0] * 2.5)
+
+    assert [joint["parent_index"] for joint in converted["joints"]] == [joint["parent_index"] for joint in baseline["joints"]]
+    for baseline_transform, converted_transform in zip(
+            _skeleton_global_bind_transforms(baseline), _skeleton_global_bind_transforms(converted), strict=True):
+        for point in ((0.0, 0.0, 0.0), (1.0, 2.0, 3.0), (-1.0, 0.5, 2.0)):
+            assert _transform_point(converted_transform, convert_point(point)) == pytest.approx(
+                convert_point(_transform_point(baseline_transform, point)), abs=1.0E-5)
+
+
+def _simple_skin_resource(p_file: str) -> dict[str, object]:
+    return {**_cube_resource(), "id": "simple_skin", "file": p_file}
+
+
+def _compile_simple_skin(p_tmp_path: Path, p_file: str = "SimpleSkin/glTF/SimpleSkin.gltf") -> list[dict[str, Any]]:
+    return _compiler()._compile_mesh_resources(
+        _simple_skin_resource(p_file), TEST_MODEL_DIR / "manifest.toml", TEST_MODEL_DIR, p_tmp_path / "output")
+
+
+def _simple_skin_joints(p_skeleton: dict[str, Any]) -> tuple[int, int]:
+    """Return the skeleton indices of the lower and upper SimpleSkin joints (glTF nodes 1 and 2)."""
+    global_binds = _skeleton_global_bind_transforms(p_skeleton)
+    origins = [_transform_point(transform, (0.0, 0.0, 0.0)) for transform in global_binds]
+    upper_indices = [index for index, origin in enumerate(origins) if origin == pytest.approx((0.0, 1.0, 0.0))]
+    assert len(upper_indices) == 1
+    upper_index = upper_indices[0]
+    return p_skeleton["joints"][upper_index]["parent_index"], upper_index
+
+
+def _rotation_z_matrix(p_cosine: float, p_sine: float) -> list[float]:
+    return [p_cosine, p_sine, 0.0, 0.0, -p_sine, p_cosine, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _invert_rigid_matrix(p_matrix: list[float]) -> list[float]:
+    # Transpose the rotation and rotate the negated translation back.
+    result = [p_matrix[column * 4 + row] if row < 3 and column < 3 else 0.0 for row in range(4) for column in range(4)]
+    for row in range(3):
+        result[12 + row] = -sum(p_matrix[row * 4 + k] * p_matrix[12 + k] for k in range(3))
+    result[15] = 1.0
+    return result
+
+
+def test_simple_skin_compiles_skeleton_matching_inverse_bind_matrices(tmp_path: Path) -> None:
+    compiled = _compile_simple_skin(tmp_path)
+
+    assert [resource["type"] for resource in compiled] == ["mesh", "binary", "binary", "skeleton"]
+    mesh, _, _, skeleton = compiled
+    assert mesh["skeleton_id"] == skeleton["id"] == "simple_skin.mesh.skeleton"
+    assert [joint["parent_index"] for joint in skeleton["joints"]] == [-1, 0, 1]
+    lower_index, upper_index = _simple_skin_joints(skeleton)
+    assert (lower_index, upper_index) == (1, 2)
+    global_binds = _skeleton_global_bind_transforms(skeleton)
+    # The glTF inverse bind matrices are the identity and a translation by (0, -1, 0).
+    assert global_binds[lower_index] == pytest.approx(_rotation_z_matrix(1.0, 0.0))
+    assert global_binds[upper_index] == pytest.approx(
+        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0])
+
+
+def test_simple_skin_binds_vertices_by_height(tmp_path: Path) -> None:
+    compiled = _compile_simple_skin(tmp_path)
+    mesh, _, _, skeleton = compiled
+    lower_index, upper_index = _simple_skin_joints(skeleton)
+    output_dir = tmp_path / "output"
+
+    submeshes = _submeshes(mesh)
+    assert len(submeshes) == 1
+    positions = _vec3_section(_binary_path(output_dir, submeshes[0]), submeshes[0], "position")
+    bindings = _joint_bindings(output_dir, submeshes[0])
+    assert len(positions) == len(bindings) == 10
+    for position, (ids, weights) in zip(positions, bindings, strict=True):
+        # The skin blends linearly from the lower joint at y = 0 to the upper joint at y = 2.
+        weight_by_joint = {upper_index: 0.0, lower_index: 0.0}
+        for joint_id, weight in zip(ids, weights, strict=True):
+            if weight != 0.0:
+                weight_by_joint[joint_id] += weight
+        assert set(weight_by_joint) == {lower_index, upper_index}
+        assert weight_by_joint[upper_index] == pytest.approx(position[1] / 2.0)
+        assert weight_by_joint[lower_index] == pytest.approx(1.0 - position[1] / 2.0)
+
+
+def test_simple_skin_skins_animation_keyframe(tmp_path: Path) -> None:
+    compiled = _compile_simple_skin(tmp_path)
+    mesh, _, _, skeleton = compiled
+    _, upper_index = _simple_skin_joints(skeleton)
+    output_dir = tmp_path / "output"
+    submesh = _submeshes(mesh)[0]
+    positions = _vec3_section(_binary_path(output_dir, submesh), submesh, "position")
+    bindings = _joint_bindings(output_dir, submesh)
+
+    # The 1.0s keyframe rotates the upper joint by +90 degrees around z.
+    pose_locals = [joint["bind_local_transform"] for joint in skeleton["joints"]]
+    pose_locals[upper_index] = _multiply_matrices(pose_locals[upper_index], _rotation_z_matrix(0.0, 1.0))
+    pose_skeleton = {"joints": [
+        {**joint, "bind_local_transform": local} for joint, local in zip(skeleton["joints"], pose_locals, strict=True)]}
+    skinning_matrices = [
+        _multiply_matrices(pose_global, _invert_rigid_matrix(bind_global)) for pose_global, bind_global in zip(
+            _skeleton_global_bind_transforms(pose_skeleton), _skeleton_global_bind_transforms(skeleton), strict=True)]
+
+    def skin(p_position: tuple[float, ...], p_ids: tuple[int, ...], p_weights: tuple[float, ...]) -> tuple[float, ...]:
+        skinned = [0.0, 0.0, 0.0]
+        for joint_id, weight in zip(p_ids, p_weights, strict=True):
+            point = _transform_point(skinning_matrices[joint_id], (p_position[0], p_position[1], p_position[2]))
+            skinned = [component + weight * value for component, value in zip(skinned, point, strict=True)]
+        return tuple(skinned)
+
+    skinned_by_position = {
+        tuple(round(component, 4) + 0.0 for component in position): skin(position, ids, weights)
+        for position, (ids, weights) in zip(positions, bindings, strict=True)}
+    # Vertices bound only to the lower joint stay put, and the top edge turns around the upper joint at (0, 1, 0).
+    assert skinned_by_position[(-0.5, 0.0, 0.0)] == pytest.approx((-0.5, 0.0, 0.0), abs=1.0E-6)
+    assert skinned_by_position[(0.5, 0.0, 0.0)] == pytest.approx((0.5, 0.0, 0.0), abs=1.0E-6)
+    assert skinned_by_position[(-0.5, 2.0, 0.0)] == pytest.approx((-1.0, 0.5, 0.0), abs=1.0E-6)
+    assert skinned_by_position[(0.5, 2.0, 0.0)] == pytest.approx((-1.0, 1.5, 0.0), abs=1.0E-6)
+    # Halfway up, the vertices average the rest and rotated positions of the upper joint.
+    assert skinned_by_position[(0.5, 1.0, 0.0)] == pytest.approx((0.25, 1.25, 0.0), abs=1.0E-6)
+
+
+def test_simple_skin_embedded_buffers_compile_identically(tmp_path: Path) -> None:
+    external = _compile_simple_skin(tmp_path / "external")
+    embedded = _compile_simple_skin(tmp_path / "embedded", "SimpleSkin/glTF-Embedded/SimpleSkin.gltf")
+
+    assert embedded[0] == external[0]
+    assert embedded[3] == external[3]
+    for binary_index in (1, 2):
+        assert (tmp_path / "embedded" / "output" / embedded[binary_index]["path"]).read_bytes() == (
+            tmp_path / "external" / "output" / external[binary_index]["path"]).read_bytes()
 
 
 def _prepare_cached_cube_source(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
