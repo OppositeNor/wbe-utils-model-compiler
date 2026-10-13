@@ -47,7 +47,7 @@ class WBEUtilsModelCompiler:
         return ["model", "static_geometry"]
 
     def _get_cache_version(self) -> str:
-        return f"{__version__}:mesh-skeleton-v1"
+        return f"{__version__}:mesh-vertex-bindings-v1"
 
     def compile(
         self,

@@ -218,26 +218,28 @@ SubmeshInstances = {
 	"submeshes": [
 		{
 			"aabb": {"center": [float, float, float], "width": float, "height": float},
-			"vertices": {
-				"binary": {"binary_id": str, "start": int, "size": int},
-				"stride": int,
-				"attributes": [
-					{"role": "position", "type": "vec3", "offset": int},
-					{"role": "normal", "type": "vec3", "offset": int},
-					{"role": "tangent", "type": "vec3", "offset": int},
-					{"role": "bitangent", "type": "vec3", "offset": int},
-					{"role": "uv", "type": "vec2", "offset": int},
-				],
-			},
+			"vertex_bindings": [  # one entry per vertex binding; every entry describes the same vertices
+				{  # geometry, always first
+					"binary": {"binary_id": str, "start": int, "size": int},
+					"stride": int,
+					"attributes": [
+						{"role": "position", "type": "vec3", "offset": int},
+						{"role": "normal", "type": "vec3", "offset": int},
+						{"role": "tangent", "type": "vec3", "offset": int},
+						{"role": "bitangent", "type": "vec3", "offset": int},
+						{"role": "uv", "type": "vec2", "offset": int},
+					],
+				},
+				{  # joint bindings, skinned models only
+					"binary": {"binary_id": str, "start": int, "size": int},
+					"stride": 32,
+					"attributes": [
+						{"role": "joint_binding_ids", "type": "ivec4", "offset": 0},
+						{"role": "joint_binding_weights", "type": "vec4", "offset": 16},
+					],
+				},
+			],
 			"indices": {"binary": {"binary_id": str, "start": int, "size": int}},
-			"joint_bindings": {  # skinned models only
-				"binary": {"binary_id": str, "start": int, "size": int},
-				"stride": 32,
-				"attributes": [
-					{"role": "joint_binding_ids", "type": "ivec4", "offset": 0},
-					{"role": "joint_binding_weights", "type": "vec4", "offset": 16},
-				],
-			},
 			"material_id": str | None,
 			"first_instance": int,
 			"instance_count": int,
@@ -247,7 +249,8 @@ SubmeshInstances = {
 }
 ```
 
-Each submesh draws instances `[first_instance, first_instance + instance_count)` of its category. Instances store
+Each `vertex_bindings` entry is one binary range with its stride and the attributes it interleaves, and every entry of a
+submesh holds the same vertices in the same order. Each submesh draws instances `[first_instance, first_instance + instance_count)` of its category. Instances store
 `global_transform` as exactly 16 column-major floats. Ordinary models bake node transforms into their vertices, so every non-empty
 category holds one identity instance and each submesh draws it once. Static geometry preserves node transforms as instances.
 Each submesh's `aabb` is computed from its exported vertex positions: `center` is `[x, y, z]`, and `width` and `height`
@@ -281,7 +284,8 @@ The joints are every bone node and all of its ancestors, rooted at the scene roo
 parent joint (the mesh space for the root). Bone bind poses come from the Assimp offset matrices; other joints use their node
 transforms. Joint transforms are converted with the same coordinate conversion and vertex scaling as positions.
 
-Every submesh of a skinned model has `joint_bindings`, one entry per vertex in the joint-binding binary: `int32` joint indices
+Every submesh of a skinned model has a second vertex binding after its geometry binding, with one entry per vertex in the
+joint-binding binary: `int32` joint indices
 followed by `float32` weights. Each vertex keeps its four strongest influences, normalized to sum to one; unused slots hold joint 0
 with weight 0. Vertices without influences, including all vertices of unskinned meshes in a skinned model, are bound with weight 1
 to the nearest joint at or above their mesh node. Bone names that match no scene node fail compilation. View metadata is stored only in the JSON resource. The native importer asks Assimp to generate tangent space and emits `tangent` and `bitangent` attributes when tangent data is available for the source mesh.

@@ -109,8 +109,31 @@ def _make_hierarchical_cube(tmp_path: Path) -> Path:
     return source_path
 
 
+def _vertex_bindings(p_submesh: dict[str, Any]) -> list[dict[str, Any]]:
+    assert "vertices" not in p_submesh
+    assert "joint_bindings" not in p_submesh
+    vertex_bindings = p_submesh["vertex_bindings"]
+    assert isinstance(vertex_bindings, list)
+    assert vertex_bindings
+    vertex_counts = {binding["binary"]["size"] // binding["stride"] for binding in vertex_bindings}
+    assert len(vertex_counts) == 1
+    return vertex_bindings
+
+
+def _vertex_view(p_submesh: dict[str, Any]) -> dict[str, Any]:
+    """Return the geometry vertex binding, which the compiler always emits first."""
+    return _vertex_bindings(p_submesh)[0]
+
+
+def _joint_binding_view(p_submesh: dict[str, Any]) -> dict[str, Any]:
+    """Return the joint-binding vertex binding of a skinned submesh, which follows the geometry binding."""
+    vertex_bindings = _vertex_bindings(p_submesh)
+    assert len(vertex_bindings) == 2
+    return vertex_bindings[1]
+
+
 def _binary_path(output_dir: Path, submesh: dict[str, object]) -> Path:
-    vertices = submesh["vertices"]
+    vertices = _vertex_view(submesh)
     assert isinstance(vertices, dict)
     binary = vertices["binary"]
     assert isinstance(binary, dict)
@@ -125,7 +148,7 @@ def _section_data(geometry_path: Path, submesh: dict[str, object], slot: str) ->
         assert isinstance(indices, dict)
         binary_view = indices["binary"]
     else:
-        vertices = submesh["vertices"]
+        vertices = _vertex_view(submesh)
         assert isinstance(vertices, dict)
         binary_view = vertices["binary"]
         attributes = vertices["attributes"]
@@ -298,11 +321,13 @@ def test_compiler_interface_compiles_cube(tmp_path: Path) -> None:
     assert "geometry_path" not in submesh
     assert "geometry_sections" not in submesh
     assert "joint_bindings" not in submesh
+    assert "vertices" not in submesh
+    assert len(submesh["vertex_bindings"]) == 1
     assert "skeleton_id" not in compiled
     geometry_path = _binary_path(tmp_path, submesh)
     assert geometry_path.is_file()
 
-    vertices = submesh["vertices"]
+    vertices = _vertex_view(submesh)
     indices = submesh["indices"]
     assert isinstance(vertices, dict)
     assert isinstance(indices, dict)
@@ -621,7 +646,7 @@ def test_geometry_compilation_converts_assimp_uv_origin(
         resources = compiler.compile_static_geometry(resource, tmp_path / "manifest.json", tmp_path, output_dir)
         compiled = next(item for item in resources if item["type"] == "mesh")
         submesh = _submeshes(compiled)[0]
-        binary_id = submesh["vertices"]["binary"]["binary_id"]
+        binary_id = _vertex_view(submesh)["binary"]["binary_id"]
         binary = next(item for item in resources if item["id"] == binary_id)
         binary_path = output_dir / binary["path"]
     else:
@@ -720,7 +745,7 @@ def test_static_geometry_compilation_emits_binary_and_empty_masked_set(tmp_path:
     assert opaque_mesh["instances"]
     submesh = opaque_mesh["submeshes"][0]
     assert submesh["material_id"] == "cube.material.Cube"
-    assert submesh["vertices"]["binary"]["binary_id"] == "cube.vertices"
+    assert _vertex_view(submesh)["binary"]["binary_id"] == "cube.vertices"
     assert submesh["indices"]["binary"]["binary_id"] == "cube.indices"
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == len(opaque_mesh["instances"])
@@ -778,7 +803,7 @@ def test_static_geometry_compilation_preserves_node_instances(tmp_path: Path) ->
     assert len(opaque_mesh["submeshes"]) == 1
     assert len(opaque_mesh["instances"]) == 2
     submesh = opaque_mesh["submeshes"][0]
-    assert submesh["vertices"]["binary"]["binary_id"] == vertex_binary["id"]
+    assert _vertex_view(submesh)["binary"]["binary_id"] == vertex_binary["id"]
     assert submesh["indices"]["binary"]["binary_id"] == index_binary["id"]
     assert submesh["first_instance"] == 0
     assert submesh["instance_count"] == 2
@@ -884,7 +909,7 @@ def _skeleton_global_bind_transforms(p_skeleton: dict[str, Any]) -> list[list[fl
 
 
 def _joint_bindings(p_output_dir: Path, p_submesh: dict[str, Any]) -> list[tuple[tuple[int, ...], tuple[float, ...]]]:
-    view = p_submesh["joint_bindings"]
+    view = _joint_binding_view(p_submesh)
     attributes = {attribute["role"]: attribute for attribute in view["attributes"]}
     data = (p_output_dir / f"{view['binary']['binary_id']}.bin").read_bytes()
     result: list[tuple[tuple[int, ...], tuple[float, ...]]] = []
@@ -935,7 +960,7 @@ def test_mesh_compilation_emits_skeleton_and_joint_bindings(tmp_path: Path) -> N
         (1.0, 2.0, 0.0): ((spine_index, hip_index, 0, 0), (0.75, 0.25, 0.0, 0.0)),
     }
     for submesh in submeshes:
-        view = submesh["joint_bindings"]
+        view = _joint_binding_view(submesh)
         assert view["stride"] == 32
         assert view["attributes"] == [
             {"role": "joint_binding_ids", "type": "ivec4", "offset": 0},
@@ -1283,10 +1308,10 @@ def test_static_geometry_stacks_sources(tmp_path: Path, second_category: str) ->
     for index, submesh in enumerate(submeshes):
         assert submesh["material_id"].startswith(f"cube.source.{index}.material.")
         assert submesh["material_id"] in materials
-        assert submesh["vertices"]["binary"]["binary_id"] == compiled[0]["id"]
+        assert _vertex_view(submesh)["binary"]["binary_id"] == compiled[0]["id"]
         assert submesh["indices"]["binary"]["binary_id"] == compiled[1]["id"]
         assert submesh["instance_count"] == 2
-    assert submeshes[1]["vertices"]["binary"]["start"] > submeshes[0]["vertices"]["binary"]["start"]
+    assert _vertex_view(submeshes[1])["binary"]["start"] > _vertex_view(submeshes[0])["binary"]["start"]
     assert submeshes[1]["indices"]["binary"]["start"] > submeshes[0]["indices"]["binary"]["start"]
     for static_mesh in sets:
         for index, submesh in enumerate(static_mesh["submeshes"]):
@@ -1418,4 +1443,4 @@ def test_static_geometry_partitions_double_sided_materials(
         assert bool(static_mesh["instances"]) == (mesh_category == category)
         for submesh in static_mesh["submeshes"]:
             assert submesh["first_instance"] + submesh["instance_count"] <= len(static_mesh["instances"])
-            assert submesh["vertices"]["binary"]["binary_id"] == "cube.vertices"
+            assert _vertex_view(submesh)["binary"]["binary_id"] == "cube.vertices"

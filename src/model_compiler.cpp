@@ -1503,12 +1503,15 @@ py::dict make_mesh_submesh(
     py::dict result;
     result["aabb"] = aabb;
     result["material_id"] = p_submesh.has_material ? py::cast(p_submesh.material_id) : py::none();
-    result["vertices"] = p_geometry_views["vertices"];
-    result["indices"] = p_geometry_views["indices"];
+    // The geometry view is always the first vertex binding; skinned submeshes append their joint bindings.
+    py::list vertex_bindings;
+    vertex_bindings.append(p_geometry_views["vertices"]);
     if (p_geometry_views.contains("joint_bindings"))
     {
-        result["joint_bindings"] = p_geometry_views["joint_bindings"];
+        vertex_bindings.append(p_geometry_views["joint_bindings"]);
     }
+    result["vertex_bindings"] = vertex_bindings;
+    result["indices"] = p_geometry_views["indices"];
     result["first_instance"] = p_first_instance;
     result["instance_count"] = p_instance_count;
     return result;
