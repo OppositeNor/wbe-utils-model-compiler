@@ -899,6 +899,24 @@ def _multiply_matrices(p_left: list[float], p_right: list[float]) -> list[float]
     ]
 
 
+SKELETON_JOINT_FORMAT = "<i16f"
+
+
+def _decode_skeleton(p_output_dir: Path, p_skeleton: dict[str, Any]) -> dict[str, Any]:
+    """Return the skeleton with its binary-backed joints decoded into parent indices and bind-local transforms."""
+    view = p_skeleton["joints"]
+    data = (p_output_dir / f"{view['binary_id']}.bin").read_bytes()
+    stride = struct.calcsize(SKELETON_JOINT_FORMAT)
+    assert stride == 68
+    assert view["size"] % stride == 0
+    assert view["start"] + view["size"] <= len(data)
+    joints: list[dict[str, Any]] = []
+    for joint_start in range(view["start"], view["start"] + view["size"], stride):
+        values = struct.unpack_from(SKELETON_JOINT_FORMAT, data, joint_start)
+        joints.append({"parent_index": values[0], "bind_local_transform": list(values[1:])})
+    return {**p_skeleton, "joints": joints}
+
+
 def _skeleton_global_bind_transforms(p_skeleton: dict[str, Any]) -> list[list[float]]:
     result: list[list[float]] = []
     for joint in p_skeleton["joints"]:
@@ -931,14 +949,21 @@ def test_mesh_compilation_emits_skeleton_and_joint_bindings(tmp_path: Path) -> N
 
     compiled = _compiler()._compile_mesh_resources(_skinned_resource(source_path), tmp_path / "manifest.toml", tmp_path, output_dir)
 
-    assert [resource["type"] for resource in compiled] == ["mesh", "binary", "binary", "skeleton"]
-    mesh, geometry_binary, joint_bindings_binary, skeleton = compiled
-    assert mesh["skeleton_id"] == skeleton["id"] == "skinned.mesh.skeleton"
+    assert [resource["type"] for resource in compiled] == ["mesh", "binary", "binary", "binary", "skeleton"]
+    mesh, geometry_binary, joint_bindings_binary, skeleton_joints_binary, skeleton_resource = compiled
+    assert mesh["skeleton_id"] == skeleton_resource["id"] == "skinned.mesh.skeleton"
     assert geometry_binary["id"] == "skinned.mesh.geometry"
     assert joint_bindings_binary == {
         "id": "skinned.mesh.joint_bindings", "type": "binary", "path": "skinned.mesh.joint_bindings.bin"}
     assert (output_dir / joint_bindings_binary["path"]).is_file()
+    assert skeleton_joints_binary == {
+        "id": "skinned.mesh.skeleton_joints", "type": "binary", "path": "skinned.mesh.skeleton_joints.bin"}
+    assert set(skeleton_resource) == {"id", "type", "joints"}
+    assert skeleton_resource["joints"]["binary_id"] == skeleton_joints_binary["id"]
+    assert skeleton_resource["joints"]["start"] == 0
+    assert skeleton_resource["joints"]["size"] == (output_dir / skeleton_joints_binary["path"]).stat().st_size
 
+    skeleton = _decode_skeleton(output_dir, skeleton_resource)
     joints = skeleton["joints"]
     assert joints[0]["parent_index"] == -1
     for joint_index, joint in enumerate(joints[1:], start=1):
@@ -983,15 +1008,17 @@ def test_mesh_compilation_emits_skeleton_and_joint_bindings(tmp_path: Path) -> N
 def test_mesh_compilation_converts_skeleton_between_coordinate_spaces(tmp_path: Path) -> None:
     source_path = _write_skinned_gltf(tmp_path / "source")
     compiler = _compiler()
-    baseline = compiler._compile_mesh_resources(
-        _skinned_resource(source_path), tmp_path / "manifest.toml", tmp_path, tmp_path / "baseline")[3]
+    baseline = _decode_skeleton(tmp_path / "baseline", compiler._compile_mesh_resources(
+        _skinned_resource(source_path), tmp_path / "manifest.toml", tmp_path, tmp_path / "baseline")[4])
     resource = {
         **_skinned_resource(source_path),
         "scale_vertex_pos": 2.5,
         "source_space": {"up": "+z", "right": "+x", "front": "-y"},
         "target_space": {"up": "+y", "right": "-z", "front": "-x"},
     }
-    converted = compiler._compile_mesh_resources(resource, tmp_path / "manifest.toml", tmp_path, tmp_path / "converted")[3]
+    converted = _decode_skeleton(
+        tmp_path / "converted",
+        compiler._compile_mesh_resources(resource, tmp_path / "manifest.toml", tmp_path, tmp_path / "converted")[4])
 
     def convert_point(p_point: tuple[float, ...]) -> tuple[float, float, float]:
         return (p_point[1] * 2.5, p_point[2] * 2.5, -p_point[0] * 2.5)
@@ -1039,9 +1066,10 @@ def _invert_rigid_matrix(p_matrix: list[float]) -> list[float]:
 def test_simple_skin_compiles_skeleton_matching_inverse_bind_matrices(tmp_path: Path) -> None:
     compiled = _compile_simple_skin(tmp_path)
 
-    assert [resource["type"] for resource in compiled] == ["mesh", "binary", "binary", "skeleton"]
-    mesh, _, _, skeleton = compiled
-    assert mesh["skeleton_id"] == skeleton["id"] == "simple_skin.mesh.skeleton"
+    assert [resource["type"] for resource in compiled] == ["mesh", "binary", "binary", "binary", "skeleton"]
+    mesh, _, _, _, skeleton_resource = compiled
+    assert mesh["skeleton_id"] == skeleton_resource["id"] == "simple_skin.mesh.skeleton"
+    skeleton = _decode_skeleton(tmp_path / "output", skeleton_resource)
     assert [joint["parent_index"] for joint in skeleton["joints"]] == [-1, 0, 1]
     lower_index, upper_index = _simple_skin_joints(skeleton)
     assert (lower_index, upper_index) == (1, 2)
@@ -1054,9 +1082,9 @@ def test_simple_skin_compiles_skeleton_matching_inverse_bind_matrices(tmp_path: 
 
 def test_simple_skin_binds_vertices_by_height(tmp_path: Path) -> None:
     compiled = _compile_simple_skin(tmp_path)
-    mesh, _, _, skeleton = compiled
-    lower_index, upper_index = _simple_skin_joints(skeleton)
+    mesh, _, _, _, skeleton_resource = compiled
     output_dir = tmp_path / "output"
+    lower_index, upper_index = _simple_skin_joints(_decode_skeleton(output_dir, skeleton_resource))
 
     submeshes = _submeshes(mesh)
     assert len(submeshes) == 1
@@ -1076,9 +1104,10 @@ def test_simple_skin_binds_vertices_by_height(tmp_path: Path) -> None:
 
 def test_simple_skin_skins_animation_keyframe(tmp_path: Path) -> None:
     compiled = _compile_simple_skin(tmp_path)
-    mesh, _, _, skeleton = compiled
-    _, upper_index = _simple_skin_joints(skeleton)
+    mesh, _, _, _, skeleton_resource = compiled
     output_dir = tmp_path / "output"
+    skeleton = _decode_skeleton(output_dir, skeleton_resource)
+    _, upper_index = _simple_skin_joints(skeleton)
     submesh = _submeshes(mesh)[0]
     positions = _vec3_section(_binary_path(output_dir, submesh), submesh, "position")
     bindings = _joint_bindings(output_dir, submesh)

@@ -1550,26 +1550,35 @@ py::dict make_mesh(const std::string& p_id,
     return result;
 }
 
-py::dict skeleton_to_python(const IntermediateSkeleton& p_skeleton, const std::string& p_skeleton_id)
+// Skeleton joints are packed int32 parent indices followed by 16 column-major float32 bind-local transform values.
+py::dict write_skeleton_joints(const IntermediateSkeleton& p_skeleton,
+    const std::filesystem::path& p_output_path,
+    const std::string& p_binary_id)
 {
-    py::list joints;
+    std::ofstream output_file(p_output_path, std::ios::binary);
+    if (!output_file.is_open())
+    {
+        throw std::runtime_error("Failed to open model skeleton joint binary for writing: " + p_output_path.generic_string());
+    }
+    size_t offset = 0;
     for (const IntermediateJoint& joint : p_skeleton.joints)
     {
-        py::list bind_local_transform;
-        for (float value : joint.bind_local_transform)
-        {
-            bind_local_transform.append(value);
-        }
-        py::dict joint_dict;
-        joint_dict["parent_index"] = joint.parent_index;
-        joint_dict["bind_local_transform"] = bind_local_transform;
-        joints.append(joint_dict);
+        write_bytes(output_file, &joint.parent_index, sizeof(joint.parent_index), offset, p_output_path);
+        write_bytes(output_file,
+            joint.bind_local_transform.data(),
+            joint.bind_local_transform.size() * sizeof(float),
+            offset,
+            p_output_path);
     }
+    return make_binary_view(p_binary_id, 0, offset);
+}
 
+py::dict skeleton_to_python(const py::dict& p_joints_view, const std::string& p_skeleton_id)
+{
     py::dict result;
     result["id"] = p_skeleton_id;
     result["type"] = "skeleton";
-    result["joints"] = joints;
+    result["joints"] = p_joints_view;
     return result;
 }
 
@@ -1650,8 +1659,14 @@ py::list mesh_resources_to_python(const IntermediateScene& p_scene,
     result.append(binary_to_python(binary_id, geometry_path));
     if (has_skeleton)
     {
+        const std::string skeleton_joints_file_name = sanitize_file_stem(p_mesh_id) + ".skeleton_joints.bin";
+        const std::string skeleton_joints_binary_id = p_mesh_id + ".skeleton_joints";
+        const py::dict skeleton_joints_view = write_skeleton_joints(
+            p_scene.skeleton, p_geometry_output_dir / skeleton_joints_file_name, skeleton_joints_binary_id);
         result.append(binary_to_python(joint_bindings_binary_id, geometry_path_for(joint_bindings_file_name, p_geometry_path_prefix)));
-        result.append(skeleton_to_python(p_scene.skeleton, skeleton_id));
+        result.append(
+            binary_to_python(skeleton_joints_binary_id, geometry_path_for(skeleton_joints_file_name, p_geometry_path_prefix)));
+        result.append(skeleton_to_python(skeleton_joints_view, skeleton_id));
     }
     return result;
 }

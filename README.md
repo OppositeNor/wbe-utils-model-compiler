@@ -137,7 +137,7 @@ material_resources = compiler.compile_materials(
 ```
 
 `compile` returns mesh or static-geometry resources first, followed by material resources. Ordinary models emit a mesh resource
-and one binary resource before materials; skinned models follow them with a joint-binding binary and a skeleton resource. Static geometry emits vertex and index binary resources and one mesh resource before
+and one binary resource before materials; skinned models follow them with a joint-binding binary, a skeleton-joint binary, and a skeleton resource. Static geometry emits vertex and index binary resources and one mesh resource before
 materials. The individual `compile_mesh`, `compile_static_geometry`, and `compile_materials` methods
 remain available when only one output category is needed.
 
@@ -269,15 +269,18 @@ Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex
 ## Skeleton Output
 
 An ordinary model whose meshes reference Assimp bones is skinned. Its mesh declares `skeleton_id`, and the compiler emits a
-`<id>.mesh.joint_bindings` binary and a skeleton resource after the geometry binary:
+`<id>.mesh.joint_bindings` binary, a `<id>.mesh.skeleton_joints` binary, and a skeleton resource after the geometry binary:
 
 ```python
 {
 	"id": "<id>.mesh.skeleton",
 	"type": "skeleton",
-	"joints": [{"parent_index": int, "bind_local_transform": list[float]}],
+	"joints": {"binary_id": "<id>.mesh.skeleton_joints", "start": int, "size": int},
 }
 ```
+
+`joints` is a byte range of the skeleton-joint binary. Each joint is 68 packed little-endian bytes with no file header or padding:
+an `int32` `parent_index` followed by the 16 `float32` values of `bind_local_transform`, so `size` is the joint count times 68.
 
 The joints are every bone node and all of its ancestors, rooted at the scene root, in depth-first order: joint 0 is the only root
 (`parent_index: -1`), and every other parent precedes its child. `bind_local_transform` is 16 column-major floats relative to the
