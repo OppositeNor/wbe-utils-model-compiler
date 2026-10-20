@@ -1499,6 +1499,7 @@ py::dict make_mesh_submesh(
     aabb["center"] = center;
     aabb["width"] = maximum[0] - minimum[0];
     aabb["height"] = maximum[1] - minimum[1];
+    aabb["depth"] = maximum[2] - minimum[2];
 
     py::dict result;
     result["aabb"] = aabb;

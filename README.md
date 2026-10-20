@@ -217,7 +217,7 @@ Both `model` and `static_geometry` emit one mesh resource with id `<id>.mesh`:
 SubmeshInstances = {
 	"submeshes": [
 		{
-			"aabb": {"center": [float, float, float], "width": float, "height": float},
+			"aabb": {"center": [float, float, float], "width": float, "height": float, "depth": float},
 			"vertex_bindings": [  # one entry per vertex binding; every entry describes the same vertices
 				{  # geometry, always first
 					"binary": {"binary_id": str, "start": int, "size": int},
@@ -253,8 +253,8 @@ Each `vertex_bindings` entry is one binary range with its stride and the attribu
 submesh holds the same vertices in the same order. Each submesh draws instances `[first_instance, first_instance + instance_count)` of its category. Instances store
 `global_transform` as exactly 16 column-major floats. Ordinary models bake node transforms into their vertices, so every non-empty
 category holds one identity instance and each submesh draws it once. Static geometry preserves node transforms as instances.
-Each submesh's `aabb` is computed from its exported vertex positions: `center` is `[x, y, z]`, and `width` and `height`
-are the full X and Y extents. Bounds include coordinate conversion and vertex scaling. Ordinary model bounds include baked
+Each submesh's `aabb` is computed from its exported vertex positions: `center` is `[x, y, z]`, and `width`, `height`, and `depth`
+are the full X, Y, and Z extents. Bounds include coordinate conversion and vertex scaling. Ordinary model bounds include baked
 node transforms; static geometry bounds are local to the submesh, before its instance transforms.
 
 Ordinary models emit one geometry binary, `<id>.mesh.geometry`; static geometry emits separate `<id>.vertices` and `<id>.indices`

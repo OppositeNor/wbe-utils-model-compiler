@@ -377,11 +377,11 @@ def test_submesh_aabb_uses_exported_positions(
     resource = {
         **_cube_resource(), "type": p_source_type, "file": str(source_path), "scale_vertex_pos": p_position_scale,
     }
-    expected_bounds = [([4.0, 6.0, 7.0], 4.0, 6.0), ([-7.0, -7.0, -11.0], 6.0, 10.0)]
+    expected_bounds = [([4.0, 6.0, 7.0], 4.0, 6.0, 6.0), ([-7.0, -7.0, -11.0], 6.0, 10.0, 6.0)]
     if p_convert_space:
         resource["source_space"] = {"up": "+z", "right": "+x", "front": "-y"}
         resource["target_space"] = {"up": "+y", "right": "-z", "front": "-x"}
-        expected_bounds = [([6.0, 7.0, -4.0], 6.0, 6.0), ([-7.0, -11.0, 7.0], 10.0, 6.0)]
+        expected_bounds = [([6.0, 7.0, -4.0], 6.0, 6.0, 4.0), ([-7.0, -11.0, 7.0], 10.0, 6.0, 6.0)]
     compiler = _compiler()
     output_dir = tmp_path / "output"
     if p_source_type == "static_geometry":
@@ -393,12 +393,13 @@ def test_submesh_aabb_uses_exported_positions(
 
     submeshes = _submeshes(mesh)
     assert len(submeshes) == 2
-    for submesh, (center, width, height) in zip(submeshes, expected_bounds, strict=True):
+    for submesh, (center, width, height, depth) in zip(submeshes, expected_bounds, strict=True):
         aabb = submesh["aabb"]
-        assert set(aabb) == {"center", "width", "height"}
+        assert set(aabb) == {"center", "width", "height", "depth"}
         assert aabb["center"] == pytest.approx([component * p_position_scale for component in center])
         assert aabb["width"] == pytest.approx(width * abs(p_position_scale))
         assert aabb["height"] == pytest.approx(height * abs(p_position_scale))
+        assert aabb["depth"] == pytest.approx(depth * abs(p_position_scale))
 
 
 def test_mesh_compilation_scales_positions_and_converts_between_coordinate_spaces(tmp_path: Path) -> None:
