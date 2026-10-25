@@ -23,9 +23,10 @@ import zlib
 
 from typing import Any
 
+import numpy as np
 import pytest
 import wbe_utils_model_compiler
-from wbe_utils_model_compiler import TextureCompileRequest, WBEUtilsModelCompiler
+from wbe_utils_model_compiler import MeshSDFBuilder, SDFCompileRequest, SDFConfig, TextureCompileRequest, WBEUtilsModelCompiler
 from wbe_utils_model_compiler import _native
 
 
@@ -1474,3 +1475,186 @@ def test_static_geometry_partitions_double_sided_materials(
         for submesh in static_mesh["submeshes"]:
             assert submesh["first_instance"] + submesh["instance_count"] <= len(static_mesh["instances"])
             assert _vertex_view(submesh)["binary"]["binary_id"] == "cube.vertices"
+
+
+class RecordingSDFCompiler:
+    def __init__(self, p_extra_bytes: int = 0) -> None:
+        self.requests: list[SDFCompileRequest] = []
+        self._extra_bytes = p_extra_bytes
+
+    def compile_sdf(self, p_request: SDFCompileRequest) -> None:
+        self.requests.append(p_request)
+        sample_count = p_request.extent[0] * p_request.extent[1] * p_request.extent[2]
+        p_request.destination_path.write_bytes(bytes(sample_count * 4 + self._extra_bytes))
+
+
+def _sdf_resource(p_source_type: str, p_resolution: float) -> dict[str, object]:
+    resource: dict[str, object] = {
+        **_cube_resource(),
+        "sdf_config": {"enabled": True, "resolution": p_resolution, "data_structure": "texture_3d"},
+    }
+    if p_source_type == "static_geometry":
+        resource.update({"source_type": "static_geometry", "source_files": [resource["file"]], "combine_nodes": False})
+    return resource
+
+
+@pytest.mark.parametrize("p_source_type,p_geometry_resource_count", [("model", 2), ("static_geometry", 3)])
+@pytest.mark.parametrize("p_resolution,p_extent", [(4, 8), (2.5, 5), (0.3, 1)])
+def test_compile_emits_sdf_covering_mesh_bounds(
+    tmp_path: Path, p_source_type: str, p_geometry_resource_count: int, p_resolution: float, p_extent: int
+) -> None:
+    recorder = RecordingSDFCompiler()
+    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=recorder)
+
+    compiled = compiler.compile(
+        _sdf_resource(p_source_type, p_resolution), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+    spacing = 1.0 / p_resolution
+    covered_size = p_extent * spacing
+    mesh = next(resource for resource in compiled if resource["type"] == "mesh")
+    sdf_binary = compiled[p_geometry_resource_count]
+    sdf = compiled[p_geometry_resource_count + 1]
+    assert mesh["sdf_id"] == "cube.mesh.sdf"
+    assert sdf_binary == {"id": "cube.mesh.sdf_samples", "type": "binary", "path": "cube.mesh.sdf_samples.bin"}
+    assert set(sdf) == {"id", "type", "data_structure", "samples", "width", "height", "depth", "aabb"}
+    assert sdf["id"] == "cube.mesh.sdf"
+    assert sdf["type"] == "sdf"
+    assert sdf["data_structure"] == "texture_3d"
+    assert sdf["samples"] == {"binary_id": "cube.mesh.sdf_samples", "start": 0, "size": p_extent ** 3 * 4}
+    assert (sdf["width"], sdf["height"], sdf["depth"]) == (p_extent, p_extent, p_extent)
+    assert sdf["aabb"]["center"] == pytest.approx([0.0, 0.0, 0.0], abs=2.0E-6)
+    assert sdf["aabb"]["width"] == pytest.approx(covered_size)
+    assert sdf["aabb"]["height"] == pytest.approx(covered_size)
+    assert sdf["aabb"]["depth"] == pytest.approx(covered_size)
+    assert (tmp_path / "cube.mesh.sdf_samples.bin").stat().st_size == p_extent ** 3 * 4
+    remaining = compiled[p_geometry_resource_count + 2:]
+    assert remaining
+    assert len(_texture_resources(remaining)) + len(_material_resources(remaining)) == len(remaining)
+
+    assert len(recorder.requests) == 1
+    request = recorder.requests[0]
+    assert request.destination_path == tmp_path / "cube.mesh.sdf_samples.bin"
+    assert request.data_structure == "texture_3d"
+    assert request.extent == (p_extent, p_extent, p_extent)
+    assert request.sample_spacing == pytest.approx(spacing)
+    assert request.sample_origin == pytest.approx([(spacing - covered_size) * 0.5] * 3, abs=2.0E-6)
+    assert request.vertex_positions.dtype == np.float32
+    assert request.vertex_positions.shape[1] == 3
+    assert request.triangle_indices.dtype == np.uint32
+    assert request.triangle_indices.shape == (12, 3)
+    assert int(request.triangle_indices.max()) < len(request.vertex_positions)
+    assert request.vertex_positions.min(axis=0) == pytest.approx([-1.0, -1.0, -1.0], abs=2.0E-6)
+    assert request.vertex_positions.max(axis=0) == pytest.approx([1.0, 1.0, 1.0], abs=2.0E-6)
+
+
+def test_static_geometry_sdf_places_triangles_by_instances(tmp_path: Path) -> None:
+    source_path = _make_hierarchical_cube(tmp_path / "source")
+    requests: dict[str, SDFCompileRequest] = {}
+    for source_type in ("model", "static_geometry"):
+        recorder = RecordingSDFCompiler()
+        compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=recorder)
+        resource = {**_sdf_resource(source_type, 4), "file": source_path.as_posix()}
+        if source_type == "static_geometry":
+            resource["source_files"] = [source_path.as_posix()]
+        compiler.compile(resource, source_path.parent / "manifest.json", source_path.parent, tmp_path / source_type)
+        requests[source_type] = recorder.requests[0]
+
+    # Models bake node transforms into their vertices, so the placed static instances must cover the same triangles.
+    model_request = requests["model"]
+    static_request = requests["static_geometry"]
+    assert static_request.triangle_indices.shape == model_request.triangle_indices.shape == (24, 3)
+    assert static_request.extent == model_request.extent
+    assert static_request.sample_origin == pytest.approx(model_request.sample_origin, abs=1.0E-5)
+    # Mirroring nodes reverse the winding of baked model triangles only, so compare the triangle corners.
+    model_corners = np.unique(np.round(model_request.vertex_positions[model_request.triangle_indices.reshape(-1)], 4), axis=0)
+    static_corners = np.unique(np.round(static_request.vertex_positions[static_request.triangle_indices.reshape(-1)], 4), axis=0)
+    assert static_corners == pytest.approx(model_corners)
+
+
+@pytest.mark.parametrize("p_sdf_config", [None, {"enabled": False}, {"enabled": False, "resolution": "ignored"}])
+def test_compile_without_enabled_sdf_config_emits_no_sdf(tmp_path: Path, p_sdf_config: dict[str, object] | None) -> None:
+    recorder = RecordingSDFCompiler()
+    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=recorder)
+    resource = _cube_resource()
+    if p_sdf_config is not None:
+        resource["sdf_config"] = p_sdf_config
+
+    compiled = compiler.compile(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+    assert recorder.requests == []
+    assert all(resource["type"] != "sdf" for resource in compiled)
+    assert "sdf_id" not in compiled[0]
+    assert not (tmp_path / "cube.mesh.sdf_samples.bin").exists()
+
+
+@pytest.mark.parametrize("p_sdf_config,p_message", [
+    ("texture_3d", "sdf_config must be an object"),
+    ({"enabled": 1}, "enabled must be a boolean"),
+    ({"enabled": True, "data_structure": "texture_3d"}, "resolution is required"),
+    ({"enabled": True, "resolution": "4", "data_structure": "texture_3d"}, "resolution must be a number"),
+    ({"enabled": True, "resolution": True, "data_structure": "texture_3d"}, "resolution must be a number"),
+    ({"enabled": True, "resolution": float("inf"), "data_structure": "texture_3d"}, "resolution must be finite"),
+    ({"enabled": True, "resolution": float("nan"), "data_structure": "texture_3d"}, "resolution must be finite"),
+    ({"enabled": True, "resolution": 0, "data_structure": "texture_3d"}, "resolution must be positive"),
+    ({"enabled": True, "resolution": -2.0, "data_structure": "texture_3d"}, "resolution must be positive"),
+    ({"enabled": True, "resolution": 4}, "data_structure is required"),
+    ({"enabled": True, "resolution": 4, "data_structure": "octree"}, "data_structure must be one of: texture_3d"),
+])
+def test_sdf_config_rejects_invalid_declarations(p_sdf_config: object, p_message: str) -> None:
+    with pytest.raises(ValueError, match=p_message):
+        SDFConfig.parse({"sdf_config": p_sdf_config})
+
+
+@pytest.mark.parametrize("p_source_type", ["model", "static_geometry"])
+def test_compile_rejects_invalid_sdf_config(tmp_path: Path, p_source_type: str) -> None:
+    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=RecordingSDFCompiler())
+    resource = _sdf_resource(p_source_type, 0)
+
+    with pytest.raises(ValueError, match="resolution must be positive"):
+        compiler.compile(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+
+def test_enabled_sdf_requires_sdf_compiler(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="no SDF compiler was provided"):
+        _compiler().compile(_sdf_resource("model", 4), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+
+def test_sdf_rejects_samples_of_the_wrong_size(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=RecordingSDFCompiler(p_extra_bytes=4))
+
+    with pytest.raises(RuntimeError, match="expected 2048"):
+        compiler.compile(_sdf_resource("model", 4), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+
+
+def test_mesh_sdf_builder_rejects_binary_not_compiled_with_mesh(tmp_path: Path) -> None:
+    resource = {**_cube_resource(), "source_type": "static_geometry", "source_files": [_cube_resource()["file"]], "combine_nodes": False}
+    compiled = _compiler().compile_static_geometry(resource, TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
+    mesh = compiled[2]
+    builder = MeshSDFBuilder(RecordingSDFCompiler())
+    config = SDFConfig(resolution=4.0, data_structure="texture_3d")
+
+    with pytest.raises(RuntimeError, match="binary 'cube.indices' is not compiled with the mesh"):
+        builder.build(mesh, [compiled[0]], config, tmp_path, Path(""))
+    assert "sdf_id" not in mesh
+
+
+def test_compile_cache_keeps_sdf_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = RecordingSDFCompiler()
+    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=recorder)
+    cache_dir, source_root, resource = _prepare_cached_cube_source(tmp_path)
+    resource["sdf_config"] = {"enabled": True, "resolution": 4, "data_structure": "texture_3d"}
+    manifest_path = source_root / "manifest.json"
+    output_dir = tmp_path / "output"
+    compile_counts = _install_compile_counters(monkeypatch)
+
+    first_result = compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    second_result = compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    assert second_result == first_result
+    assert len(recorder.requests) == 1
+    assert compile_counts["mesh"] == 1
+
+    (output_dir / "cube.mesh.sdf_samples.bin").unlink()
+    third_result = compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
+    assert third_result == first_result
+    assert len(recorder.requests) == 2
+    assert compile_counts["mesh"] == 2

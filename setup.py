@@ -76,6 +76,7 @@ def main() -> None:
         long_description=README_PATH.read_text(encoding="utf-8"),
         long_description_content_type="text/markdown",
         packages=["wbe_utils_model_compiler"],
+        install_requires=["numpy"],
         ext_modules=[CMakeExtension("wbe_utils_model_compiler._native")],
         cmdclass={"build_ext": CMakeBuild},
         zip_safe=False,

@@ -13,6 +13,17 @@
 # limitations under the License.
 from ._version import __version__
 from .compiler import ManifestResource, WBEUtilsModelCompiler
+from .sdf_compiler import MeshSDFBuilder, SDFCompileRequest, SDFCompiler, SDFConfig
 from .texture_compiler import TextureCompileRequest, TextureCompiler
 
-__all__ = ["ManifestResource", "TextureCompileRequest", "TextureCompiler", "WBEUtilsModelCompiler", "__version__"]
+__all__ = [
+    "ManifestResource",
+    "MeshSDFBuilder",
+    "SDFCompileRequest",
+    "SDFCompiler",
+    "SDFConfig",
+    "TextureCompileRequest",
+    "TextureCompiler",
+    "WBEUtilsModelCompiler",
+    "__version__",
+]

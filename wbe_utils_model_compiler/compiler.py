@@ -22,6 +22,7 @@ from typing import Any
 
 from . import _native
 from ._version import __version__
+from .sdf_compiler import MeshSDFBuilder, SDFCompiler, SDFConfig
 from .texture_compiler import TextureCompileRequest, TextureCompiler
 
 
@@ -30,7 +31,11 @@ ManifestResource = dict[str, Any]
 
 class WBEUtilsModelCompiler:
     def __init__(
-        self, texture_compiler: TextureCompiler, cache_dir: Path | None = None, texture_worker_count: int | None = None
+        self,
+        texture_compiler: TextureCompiler,
+        cache_dir: Path | None = None,
+        texture_worker_count: int | None = None,
+        sdf_compiler: SDFCompiler | None = None,
     ) -> None:
         cpu_count = os.cpu_count() or 1
         if texture_worker_count is None:
@@ -40,6 +45,7 @@ class WBEUtilsModelCompiler:
         self._texture_worker_count = texture_worker_count
         self._texture_thread_count = max(1, min(16, cpu_count // texture_worker_count))
         self._texture_compiler = texture_compiler
+        self._mesh_sdf_builder = MeshSDFBuilder(sdf_compiler)
         self._cache_dir = cache_dir
 
     def get_supported_resource_types(self) -> list[str]:
@@ -94,6 +100,7 @@ class WBEUtilsModelCompiler:
         # Reject manifest entries that are routed to the wrong compiler.
         if resource.get("type") != "model":
             raise ValueError("WBEUtilsModelCompiler only supports model resources.")
+        sdf_config = SDFConfig.parse(resource)
 
         # Resolve all output locations before invoking the native compiler.
         source_path = self._resolve_resource_path(resource, manifest_path, res_dir)
@@ -134,7 +141,7 @@ class WBEUtilsModelCompiler:
         )
         if not isinstance(compiled_resources, list) or not compiled_resources:
             raise RuntimeError("Model compiler produced no mesh resources.")
-        return compiled_resources
+        return self._append_sdf_resources(compiled_resources, sdf_config, res_output_dir, geometry_path_prefix)
 
     def compile_static_geometry(
         self,
@@ -149,6 +156,7 @@ class WBEUtilsModelCompiler:
             raise ValueError("WBEUtilsModelCompiler only compiles static geometry from static_geometry resources.")
         if bool(resource.get("combine_nodes", False)):
             raise ValueError("static_geometry preserves nodes as instances and does not support combine_nodes.")
+        sdf_config = SDFConfig.parse(resource)
 
         source_paths = self._resolve_resource_paths(resource, manifest_path, res_dir)
         res_output_dir.mkdir(parents=True, exist_ok=True)
@@ -178,7 +186,22 @@ class WBEUtilsModelCompiler:
         )
         if not isinstance(compiled_resources, list) or len(compiled_resources) != 3:
             raise RuntimeError("Model compiler produced invalid static geometry resources.")
-        return compiled_resources
+        return self._append_sdf_resources(compiled_resources, sdf_config, res_output_dir, geometry_path_prefix)
+
+    def _append_sdf_resources(
+        self,
+        compiled_resources: list[ManifestResource],
+        sdf_config: SDFConfig | None,
+        res_output_dir: Path,
+        geometry_path_prefix: str,
+    ) -> list[ManifestResource]:
+        # The SDF samples sit beside the geometry binaries they are computed from.
+        if sdf_config is None:
+            return compiled_resources
+        mesh_resource = next(resource for resource in compiled_resources if resource.get("type") == "mesh")
+        sdf_resources = self._mesh_sdf_builder.build(
+            mesh_resource, compiled_resources, sdf_config, res_output_dir, Path(geometry_path_prefix))
+        return [*compiled_resources, *sdf_resources]
 
     def compile_materials(
         self,

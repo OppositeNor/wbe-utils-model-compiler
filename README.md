@@ -39,6 +39,7 @@ The path can be overridden with `WBE_DEPENDENCIES_ROOT` or `--dependencies-root`
 - CMake 3.22 or newer
 - A C++23 compiler
 - Python build and test packages listed in `pyproject.toml`
+- NumPy
 - Assimp source at `../assimp/` or a custom source path
 
 Assimp is built from source with this project by CMake. It is not loaded through `pkg-config` and does not need to be installed system-wide.
@@ -85,7 +86,7 @@ pip install . --no-deps --no-build-isolation
 ```python
 from pathlib import Path
 
-from wbe_utils_model_compiler import TextureCompileRequest, WBEUtilsModelCompiler
+from wbe_utils_model_compiler import SDFCompileRequest, TextureCompileRequest, WBEUtilsModelCompiler
 
 
 class TextureCompiler:
@@ -94,10 +95,17 @@ class TextureCompiler:
 		...
 
 
+class SDFCompiler:
+	def compile_sdf(self, request: SDFCompileRequest) -> None:
+		# Host application implementation: write the signed distance at every sample to request.destination_path.
+		...
+
+
 compiler = WBEUtilsModelCompiler(
 	texture_compiler=TextureCompiler(),
 	cache_dir=Path("build/debug/build_cache/model_compiler"),
 	texture_worker_count=4,
+	sdf_compiler=SDFCompiler(),
 )
 
 resource = {
@@ -181,6 +189,11 @@ without invoking the native compiler.
 	},
 	"geometry_output_dir": str,
 	"scale_vertex_pos": float,
+	"sdf_config": {
+		"enabled": bool,
+		"resolution": float,
+		"data_structure": "texture_3d",
+	},
 	"source_space": {
 		"up": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
 		"right": "x" | "y" | "z" | "-x" | "-y" | "-z" | "+x" | "+y" | "+z",
@@ -266,6 +279,36 @@ binaries:
 
 Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex attribute values and `uint32` indices with no file header.
 
+## SDF Output
+
+`sdf_config.enabled` defaults to false; `resolution` and `data_structure` are read, and required, only when it is true.
+`resolution` is the positive number of samples per unit of distance, and `texture_3d` is the only data structure. An enabled
+`model` or `static_geometry` appends a sample binary and an `sdf` resource after its other geometry resources, and the mesh
+declares `sdf_id`:
+
+```python
+{"id": "<id>.mesh.sdf_samples", "type": "binary", "path": str}
+
+{
+	"id": "<id>.mesh.sdf",
+	"type": "sdf",
+	"data_structure": "texture_3d",
+	"samples": {"binary_id": "<id>.mesh.sdf_samples", "start": 0, "size": int},
+	"width": int,
+	"height": int,
+	"depth": int,
+	"aabb": {"center": [float, float, float], "width": float, "height": float, "depth": float},
+}
+```
+
+The field is in mesh space: `MeshSDFBuilder` reads the triangles of every category back from the emitted binaries and places
+them by every instance that draws them. The samples cover the triangles' bounds, enlarged per axis to `width`, `height`, and `depth`
+whole samples of size `1 / resolution` about their center; `aabb` is the covered box, and each sample lies at the center of its cell. The
+binary holds little-endian `float32` distances, negative inside, with x varying fastest, then y, then z, and no header.
+Distances are sampled by the host `SDFCompiler` passed to `WBEUtilsModelCompiler`, which receives an `SDFCompileRequest`
+with the triangles, the grid, and the destination path; compiling an enabled declaration without one fails. Hosts that compile
+other mesh sources can emit the same output with `MeshSDFBuilder` and `SDFConfig`.
+
 ## Skeleton Output
 
 An ordinary model whose meshes reference Assimp bones is skinned. Its mesh declares `skeleton_id`, and the compiler emits a
@@ -325,4 +368,4 @@ Run the full test path through the build wrapper:
 python build.py test
 ```
 
-The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh/static-geometry output fields, geometry sidecar files and views, material references, copied/generated texture bindings, and relative texture paths.
+The tests compile `test-model/Cube/glTF/Cube.gltf` and verify package import, native extension loading, mesh/static-geometry output fields, geometry sidecar files and views, material references, copied/generated texture bindings, relative texture paths, and SDF requests and outputs.
