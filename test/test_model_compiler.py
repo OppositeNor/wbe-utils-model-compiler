@@ -1478,14 +1478,14 @@ def test_static_geometry_partitions_double_sided_materials(
 
 
 class RecordingSDFCompiler:
-    def __init__(self, p_extra_bytes: int = 0) -> None:
+    def __init__(self, p_writes_texture: bool = True) -> None:
         self.requests: list[SDFCompileRequest] = []
-        self._extra_bytes = p_extra_bytes
+        self._writes_texture = p_writes_texture
 
     def compile_sdf(self, p_request: SDFCompileRequest) -> None:
         self.requests.append(p_request)
-        sample_count = p_request.extent[0] * p_request.extent[1] * p_request.extent[2]
-        p_request.destination_path.write_bytes(bytes(sample_count * 4 + self._extra_bytes))
+        if self._writes_texture:
+            p_request.destination_path.write_bytes(b"sdf texture")
 
 
 def _sdf_resource(p_source_type: str, p_resolution: float) -> dict[str, object]:
@@ -1512,28 +1512,27 @@ def test_compile_emits_sdf_covering_mesh_bounds(
     spacing = 1.0 / p_resolution
     covered_size = p_extent * spacing
     mesh = next(resource for resource in compiled if resource["type"] == "mesh")
-    sdf_binary = compiled[p_geometry_resource_count]
+    sdf_texture = compiled[p_geometry_resource_count]
     sdf = compiled[p_geometry_resource_count + 1]
     assert mesh["sdf_id"] == "cube.mesh.sdf"
-    assert sdf_binary == {"id": "cube.mesh.sdf_samples", "type": "binary", "path": "cube.mesh.sdf_samples.bin"}
-    assert set(sdf) == {"id", "type", "data_structure", "samples", "width", "height", "depth", "aabb"}
+    assert sdf_texture == {"id": "cube.mesh.sdf_texture", "type": "texture", "path": "cube.mesh.sdf_texture.ktx2"}
+    assert set(sdf) == {"id", "type", "data_structure", "texture_id", "aabb"}
     assert sdf["id"] == "cube.mesh.sdf"
     assert sdf["type"] == "sdf"
     assert sdf["data_structure"] == "texture_3d"
-    assert sdf["samples"] == {"binary_id": "cube.mesh.sdf_samples", "start": 0, "size": p_extent ** 3 * 4}
-    assert (sdf["width"], sdf["height"], sdf["depth"]) == (p_extent, p_extent, p_extent)
+    assert sdf["texture_id"] == "cube.mesh.sdf_texture"
     assert sdf["aabb"]["center"] == pytest.approx([0.0, 0.0, 0.0], abs=2.0E-6)
     assert sdf["aabb"]["width"] == pytest.approx(covered_size)
     assert sdf["aabb"]["height"] == pytest.approx(covered_size)
     assert sdf["aabb"]["depth"] == pytest.approx(covered_size)
-    assert (tmp_path / "cube.mesh.sdf_samples.bin").stat().st_size == p_extent ** 3 * 4
+    assert (tmp_path / "cube.mesh.sdf_texture.ktx2").is_file()
     remaining = compiled[p_geometry_resource_count + 2:]
     assert remaining
     assert len(_texture_resources(remaining)) + len(_material_resources(remaining)) == len(remaining)
 
     assert len(recorder.requests) == 1
     request = recorder.requests[0]
-    assert request.destination_path == tmp_path / "cube.mesh.sdf_samples.bin"
+    assert request.destination_path == tmp_path / "cube.mesh.sdf_texture.ktx2"
     assert request.data_structure == "texture_3d"
     assert request.extent == (p_extent, p_extent, p_extent)
     assert request.sample_spacing == pytest.approx(spacing)
@@ -1584,7 +1583,7 @@ def test_compile_without_enabled_sdf_config_emits_no_sdf(tmp_path: Path, p_sdf_c
     assert recorder.requests == []
     assert all(resource["type"] != "sdf" for resource in compiled)
     assert "sdf_id" not in compiled[0]
-    assert not (tmp_path / "cube.mesh.sdf_samples.bin").exists()
+    assert not (tmp_path / "cube.mesh.sdf_texture.ktx2").exists()
 
 
 @pytest.mark.parametrize("p_sdf_config,p_message", [
@@ -1619,10 +1618,12 @@ def test_enabled_sdf_requires_sdf_compiler(tmp_path: Path) -> None:
         _compiler().compile(_sdf_resource("model", 4), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
 
-def test_sdf_rejects_samples_of_the_wrong_size(tmp_path: Path) -> None:
-    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=RecordingSDFCompiler(p_extra_bytes=4))
+def test_sdf_rejects_compiler_that_writes_no_texture(tmp_path: Path) -> None:
+    compiler = WBEUtilsModelCompiler(RecordingTextureCompiler(), sdf_compiler=RecordingSDFCompiler(p_writes_texture=False))
+    # A texture left by an earlier build must not pass for the compiler's output.
+    (tmp_path / "cube.mesh.sdf_texture.ktx2").write_bytes(b"stale")
 
-    with pytest.raises(RuntimeError, match="expected 2048"):
+    with pytest.raises(RuntimeError, match="did not write the texture"):
         compiler.compile(_sdf_resource("model", 4), TEST_MODEL_DIR / "manifest.json", TEST_MODEL_DIR, tmp_path)
 
 
@@ -1653,7 +1654,7 @@ def test_compile_cache_keeps_sdf_outputs(tmp_path: Path, monkeypatch: pytest.Mon
     assert len(recorder.requests) == 1
     assert compile_counts["mesh"] == 1
 
-    (output_dir / "cube.mesh.sdf_samples.bin").unlink()
+    (output_dir / "cube.mesh.sdf_texture.ktx2").unlink()
     third_result = compiler.compile(resource, manifest_path, source_root, output_dir, cache_dir=cache_dir)
     assert third_result == first_result
     assert len(recorder.requests) == 2

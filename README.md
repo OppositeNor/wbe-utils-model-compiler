@@ -283,31 +283,29 @@ Geometry sidecar binaries contain raw little-endian interleaved `float32` vertex
 
 `sdf_config.enabled` defaults to false; `resolution` and `data_structure` are read, and required, only when it is true.
 `resolution` is the positive number of samples per unit of distance, and `texture_3d` is the only data structure. An enabled
-`model` or `static_geometry` appends a sample binary and an `sdf` resource after its other geometry resources, and the mesh
+`model` or `static_geometry` appends an SDF texture and an `sdf` resource after its other geometry resources, and the mesh
 declares `sdf_id`:
 
 ```python
-{"id": "<id>.mesh.sdf_samples", "type": "binary", "path": str}
+{"id": "<id>.mesh.sdf_texture", "type": "texture", "path": str}
 
 {
 	"id": "<id>.mesh.sdf",
 	"type": "sdf",
 	"data_structure": "texture_3d",
-	"samples": {"binary_id": "<id>.mesh.sdf_samples", "start": 0, "size": int},
-	"width": int,
-	"height": int,
-	"depth": int,
+	"texture_id": "<id>.mesh.sdf_texture",
 	"aabb": {"center": [float, float, float], "width": float, "height": float, "depth": float},
 }
 ```
 
 The field is in mesh space: `MeshSDFBuilder` reads the triangles of every category back from the emitted binaries and places
-them by every instance that draws them. The samples cover the triangles' bounds, enlarged per axis to `width`, `height`, and `depth`
-whole samples of size `1 / resolution` about their center; `aabb` is the covered box, and each sample lies at the center of its cell. The
-binary holds little-endian `float32` distances, negative inside, with x varying fastest, then y, then z, and no header.
-Distances are sampled by the host `SDFCompiler` passed to `WBEUtilsModelCompiler`, which receives an `SDFCompileRequest`
-with the triangles, the grid, and the destination path; compiling an enabled declaration without one fails. Hosts that compile
-other mesh sources can emit the same output with `MeshSDFBuilder` and `SDFConfig`.
+them by every instance that draws them. The samples cover the triangles' bounds, enlarged per axis to a whole number of
+samples of size `1 / resolution` about their center; `aabb` is the covered box, and each sample lies at the center of its
+cell. Distances are sampled by the host `SDFCompiler` passed to `WBEUtilsModelCompiler`, which receives an
+`SDFCompileRequest` with the triangles, the grid, and the `.ktx2` destination path, and writes a 3D `VK_FORMAT_R16_SFLOAT`
+KTX2 texture with one mip level and one texel per sample, negative inside, rounded toward zero. Compiling an enabled
+declaration without an SDF compiler fails. Hosts that compile other mesh sources can emit the same output with
+`MeshSDFBuilder` and `SDFConfig`.
 
 ## Skeleton Output
 

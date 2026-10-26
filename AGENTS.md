@@ -158,7 +158,7 @@ Run tests with `python build.py test`.
 - Geometry sidecar binaries are raw interleaved vertex payloads followed by `uint32` indices with no file header.
 - Assimp tangent-space generation is enabled. Preserve tangent and bitangent export when changing import flags or intermediate vertex fields.
 - `geometry_output_dir` is source-only and resource-root-relative. Do not leak it into runtime resource dictionaries.
-- `sdf_config` is source-only. An enabled one appends an SDF sample `binary` and an `sdf` resource after the mesh's other
+- `sdf_config` is source-only. An enabled one appends an SDF `texture` (3D R16_SFLOAT KTX2) and an `sdf` resource after the mesh's other
   geometry resources and sets the mesh's `sdf_id`. `MeshSDFBuilder` owns SDF grid and output shaping for every mesh source;
   the injected host `SDFCompiler` only samples distances.
 
